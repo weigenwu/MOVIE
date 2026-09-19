@@ -13,7 +13,7 @@
 
 点击“上一个视频 / 下一个视频”或左侧素材列表逐个查看。文件夹导入按相对路径自然排序（例如 2 在 10 前）；不同子文件夹中的同名视频分别保留，重复导入同一文件夹不会重复加入。每个视频分别记住当前页面内的裁剪位置、时间、比例和导出设置；刷新网页后不保留。导入仅建立列表，选中时才读取预览，不会同时解码整个文件夹。
 
-AVI 及浏览器无法直接播放的 MP4 默认按帧预览。点击播放会为所选时间范围生成轻量播放预览。导出始终从原文件读取，保留原始帧率，不使用低分辨率预览作为导出来源。
+未压缩、无音频的 RGB AVI（24 位 BI_RGB）直接从本地文件读取当前帧播放，不再生成整段 MP4 预览；你提供的 5 个大 AVI 均使用此路径。仅保留当前帧与一个待显示帧，切换视频时释放旧帧。磁盘较慢时预览会跳帧以跟上播放时间；导出始终从原文件读取，保留原始帧率。浏览器支持的 MP4 继续原生播放；其他 AVI / MP4 仍采用 PNG 定位和转码播放预览。
 
 ## 限制
 
@@ -53,6 +53,8 @@ npm run preview
 预览修复：overlay AVI 在旧版 JPEG 预览编码时可复现 `Buffer reallocation failed` / `memory access out of bounds`；单独解码成功，改为 PNG 预览后通过。已补测 5 个真实 AVI 的预览与切换、overlay 在 1/20/41 秒定位、播放、MP4/FFV1 裁剪导出，并以原生 FFmpeg 验证无损输出对应首帧像素完全一致。
 
 本地重现：`node test-browser.mjs <包含 MP4 和 avi 子目录的路径>`。
+直接播放检查：`node test-fast-preview.mjs`；包含 5 个真实 AVI、定位、暂停、时间终点、播放中切换 / 导出、MP4 回归及未调用 FFmpeg 预览转码断言。预览帧的浏览器 RGBA SHA-256 写入本地报告，可与原生 FFmpeg 解码独立比较。
+
 overlay 回归检查：在本项目目录运行 `node test-overlay.mjs`，测试数据位于上一级的 `avi` 目录，且包含 `*_overlay.avi`。
 独立验证脚本 `verify-exports.py` 需要把 `imageio-ffmpeg` 安装到 `test-results/native-tools`。
 `test-interactions.mjs` 另需要 `test-results/audio-source.mp4`（带声音的 4 秒测试视频）。

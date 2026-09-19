@@ -21,11 +21,11 @@ try {
     await page.locator('#format').selectOption(format);
     const p=page.waitForEvent('download');await page.locator('#export').click();const d=await p;await d.saveAs(path.resolve(`test-results/overlay-crop.${format}`));await idle();
   }
-  await page.locator('#play').click();await idle();await page.waitForFunction(()=>!document.getElementById('video').paused);await page.locator('#play').click();
+  await page.locator('#play').click();await idle();await page.waitForFunction(()=>document.getElementById('play').textContent==='Ⅱ');await page.locator('#play').click();
   // The same preview path must remain healthy after repeated channel switches.
   for(const channel of (await readdir('../avi')).filter(n=>n.endsWith('.avi')&&!n.endsWith('_overlay.avi'))){
     await page.locator('#file-input').setInputFiles(path.resolve('../avi',channel));await idle();
-    assert(await page.locator('#frame').evaluate(e=>e.naturalWidth===1024));
+    assert(await page.locator('#frame').evaluate(e=>e.naturalWidth===2432));
   }
   await page.locator('.file-item').first().click();await idle();
   assert.deepEqual(consoleErrors,[]);

@@ -18,7 +18,7 @@ try{
   assert(Number(await page.locator('#crop-x').inputValue())>200);
   await page.locator('#aspect').selectOption('1');assert.equal(await page.locator('#crop-w').inputValue(),await page.locator('#crop-h').inputValue());
   await set('start',1);await set('end',3);await page.locator('#play').click();await idle();
-  await page.waitForFunction(()=>!document.getElementById('video').paused);assert.equal(await page.locator('#video').evaluate(v=>v.videoWidth),720);await page.locator('#play').click();
+  await page.waitForFunction(()=>document.getElementById('play').textContent==='Ⅱ');assert.equal(await page.locator('#frame').evaluate(v=>v.naturalWidth),2432);await page.locator('#play').click();
   // Export a sizeable region of the real large AVI and cancel, then retry.
   await page.locator('#reset-time').click();await page.locator('#reset-crop').click();await page.locator('#export').click();await page.locator('#cancel').click();
   await page.waitForFunction(()=>!document.body.classList.contains('busy'));assert.match(await page.locator('#message').textContent(),/取消/);

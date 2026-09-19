@@ -1,8 +1,10 @@
+import { openRawAVI } from './raw-avi.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
 const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
+let previewEpoch = 0, previewTimer = null;
 let logLines = [], resultURL = null;
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 const even = n => Math.floor(n / 2) * 2;
@@ -24,7 +26,7 @@ function controls() {
 }
 async function task(label, fn) {
   if (busy) return false;
-  busy = true; cancelled = false; fetchAbort = new AbortController(); video.pause(); controls(); progress(label);
+  busy = true; cancelled = false; fetchAbort = new AbortController(); stopPlayback(); controls(); progress(label);
   try { await fn(); return true; }
   catch (err) {
     if (cancelled) status('已取消，可以调整后重新操作。');
@@ -163,11 +165,14 @@ async function selectFile(item) {
   if (busy) return;
   if (active?.meta) active.exportSettings = { format:$('format').value, quality:$('quality').value, audio:$('audio').checked };
   await task('正在读取视频…', async () => {
+    if (active?.raw && active !== item) { URL.revokeObjectURL(active.frameURL); active.frameURL = null; active.frameIndex = null; }
     video.pause(); active = item; $('result').hidden = true; $('media-stage').hidden = true; $('empty-state').hidden = true; renderFiles();
     $('active-name').textContent = item.file.name;
     $('active-name').title = item.path;
     $('source-info').textContent = '正在读取视频…';
     if (!item.meta) await probe(item);
+    if (item.ext === 'avi' && item.raw === undefined) item.raw = await openRawAVI(item.file, item.meta);
+    checkCancelled();
     $('source-info').textContent = `${item.meta.width} × ${item.meta.height} · ${Number(item.meta.fps.toFixed(3))} fps`;
     item.exportSettings ||= { format:'mp4', quality:'18', audio:item.meta.audio };
     $('aspect').value = item.aspect; $('audio').checked = item.exportSettings.audio;
@@ -179,13 +184,18 @@ async function selectFile(item) {
       item.native = await nativeVideo(item.nativeURL); checkCancelled();
     }
     if (item.native) { clipOffset = 0; showVideo(); video.currentTime = item.current; }
-    else { item.native = false; await frameAt(item.current); }
-    status(item.native ? '拖动选框调整画面，设置时间后即可导出。' : '已开启按帧预览。拖动进度条查看；点击播放可生成所选片段的播放预览。');
+    else {
+      item.native = false;
+      try { await frameAt(item.current); }
+      catch (error) { if (!item.raw) throw error; item.raw = null; await frameAt(item.current); }
+    }
+    status(item.raw ? '可以直接播放，无需等待生成预览。拖动进度条或逐帧查看后即可裁剪导出。' : item.native ? '拖动选框调整画面，设置时间后即可导出。' : '已开启按帧预览。拖动进度条查看；点击播放可生成所选片段的播放预览。');
     renderFiles();
   });
 }
 function showVideo() { video.hidden = false; $('frame').hidden = true; $('preview-label').textContent = active.native ? '原视频预览' : '播放预览 · 导出使用原视频'; }
 async function frameAt(seconds) {
+  if (active.raw) { await rawFrameAt(active, seconds, previewEpoch); return; }
   const path = await mount(active);
   progress('正在读取当前帧…');
   const t = clamp(seconds, 0, Math.max(0,active.meta.duration - 1 / active.meta.fps));
@@ -198,6 +208,43 @@ async function frameAt(seconds) {
   active.frameURL = URL.createObjectURL(new Blob([bytes], { type:'image/png' }));
   $('frame').src = active.frameURL; await $('frame').decode();
   video.hidden = true; $('frame').hidden = false; $('preview-label').textContent = '按帧预览 · 点击播放生成片段预览';
+}
+function stopPlayback() {
+  previewEpoch++; clearTimeout(previewTimer); previewTimer = null;
+  previewPlaying = false; video.pause(); $('play').textContent = '▶';
+}
+$('edit-controls').addEventListener('focusin', stopPlayback);
+canvas.addEventListener('focus', stopPlayback);
+async function rawFrameAt(item, seconds, epoch) {
+  const index = clamp(Math.floor(seconds * item.meta.fps + 1e-6), 0, item.raw.frames - 1);
+  if (item.frameIndex !== index || !item.frameURL) {
+    const url = URL.createObjectURL(item.raw.frame(index)), image = new Image(); image.src = url;
+    try { await image.decode(); } catch (error) { URL.revokeObjectURL(url); throw error; }
+    if (epoch !== previewEpoch || item !== active) { URL.revokeObjectURL(url); return; }
+    const previousURL = item.frameURL;
+    item.frameURL = url; item.frameIndex = index; $('frame').src = url;
+    if (previousURL) URL.revokeObjectURL(previousURL);
+  } else $('frame').src = item.frameURL;
+  video.hidden = true; $('frame').hidden = false; $('frame').dataset.index = index;
+  $('preview-label').textContent = '直接播放 · 无需生成预览';
+}
+function playRaw() {
+  const item = active, epoch = ++previewEpoch, start = item.current, started = performance.now();
+  previewPlaying = true; $('play').textContent = 'Ⅱ';
+  // Keep only the displayed frame and one pending read. Slow disks may skip
+  // preview frames to keep time; source frames remain untouched for export.
+  const tick = async () => {
+    if (epoch !== previewEpoch || active !== item) return;
+    const target = Math.min(item.end, start + (performance.now() - started) / 1000);
+    try { await rawFrameAt(item, Math.min(target, item.end - 1e-6), epoch); }
+    catch { if (epoch === previewEpoch) { stopPlayback(); status('当前画面读取失败，请重新定位或切换视频后重试。', true); } return; }
+    if (epoch !== previewEpoch || active !== item) return;
+    item.current = target; sync();
+    if (target >= item.end) { stopPlayback(); return; }
+    const nextFrame = (Math.floor(target * item.meta.fps + 1e-6) + 1) / item.meta.fps;
+    previewTimer = setTimeout(tick, Math.max(0, (nextFrame - start) * 1000 - (performance.now() - started)));
+  };
+  tick();
 }
 function sync() {
   if (!active?.meta) return;
@@ -239,7 +286,7 @@ function normalizedCrop(c) {
 function aspectRatio(){return active.aspect==='original'?active.meta.width/active.meta.height:active.aspect==='free'?0:Number(active.aspect);}
 function position(e){const rect=canvas.getBoundingClientRect();return {x:clamp((e.clientX-rect.left)/rect.width*active.meta.width,0,active.meta.width),y:clamp((e.clientY-rect.top)/rect.height*active.meta.height,0,active.meta.height)};}
 canvas.onpointerdown=e=>{
-  if(busy||!active?.meta)return; video.pause(); const p=position(e),c=active.crop;
+  if(busy||!active?.meta)return; stopPlayback(); const p=position(e),c=active.crop;
   const threshold=12/canvas.getBoundingClientRect().width*active.meta.width;
   const handle=handles(c).findIndex(([x,y])=>Math.abs(x-p.x)<threshold&&Math.abs(y-p.y)<threshold);
   const inside=p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
@@ -265,21 +312,25 @@ $('aspect').onchange=()=>{active.aspect=$('aspect').value;const ratio=aspectRati
 $('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};sync();};
 function setTime(which,value){
   if(!Number.isFinite(value)){sync();return;}const gap=Math.min(1/active.meta.fps,active.meta.duration);
-  if(which==='start')active.start=clamp(value,0,active.end-gap);else active.end=clamp(value,active.start+gap,active.meta.duration);video.pause();sync();
+  if(which==='start')active.start=clamp(value,0,active.end-gap);else active.end=clamp(value,active.start+gap,active.meta.duration);stopPlayback();sync();
 }
 for(const key of ['start','end']){$(key).onchange=()=>setTime(key,Number($(key).value));$(key+'-range').oninput=()=>setTime(key,Number($(key+'-range').value));}
-$('reset-time').onclick=()=>{active.start=0;active.end=active.meta.duration;sync();};
+$('reset-time').onclick=()=>{stopPlayback();active.start=0;active.end=active.meta.duration;sync();};
 $('set-start').onclick=()=>setTime('start',active.current);$('set-end').onclick=()=>setTime('end',active.current);
 async function seek(seconds){
-  if(busy||!active?.meta)return;video.pause();active.current=clamp(seconds,0,Math.max(0,active.meta.duration-1/active.meta.fps));sync();
+  if(busy||!active?.meta)return;stopPlayback();active.current=clamp(seconds,0,Math.max(0,active.meta.duration-1/active.meta.fps));sync();
   if(active.native){clipOffset=0;showVideo();video.currentTime=active.current;}
   else if(active.proxy && active.current>=active.proxy.start && active.current<active.proxy.end){if(video.src!==active.proxy.url)await nativeVideo(active.proxy.url);clipOffset=active.proxy.start;showVideo();video.currentTime=active.current-clipOffset;}
   else await task('读取视频帧…',()=>frameAt(active.current));
 }
-$('seek').oninput=()=>{if(active){active.current=Number($('seek').value);sync();if(active.native){video.pause();video.currentTime=active.current;}}};
+$('seek').oninput=()=>{if(active){stopPlayback();active.current=Number($('seek').value);sync();if(active.native)video.currentTime=active.current;}};
 $('seek').onchange=()=>seek(Number($('seek').value));$('previous').onclick=()=>seek(active.current-1/active.meta.fps);$('next').onclick=()=>seek(active.current+1/active.meta.fps);
 $('play').onclick=async()=>{
-  if(!video.paused&&!video.hidden){video.pause();return;}if(!active?.meta)return;
+  if(previewPlaying || (!video.paused&&!video.hidden)){stopPlayback();return;}if(!active?.meta)return;
+  if(active.raw){
+    if(active.current<active.start||active.current>=active.end-1/active.meta.fps)active.current=active.start;
+    playRaw();return;
+  }
   if(!active.native && !(active.proxy&&active.proxy.start<=active.start&&active.proxy.end>=active.end)){
     const ok=await task('正在生成选定片段的播放预览…',async()=>{
       const path=await mount(active);processingDuration=active.end-active.start;progress('正在生成播放预览，完成后自动播放…',0);
@@ -294,8 +345,8 @@ $('play').onclick=async()=>{
   if(active.current<active.start||active.current>=active.end-1/active.meta.fps)active.current=active.start;
   video.currentTime=active.current-clipOffset;previewPlaying=true;video.play().catch(e=>status('请再次点击播放：'+e.message,true));
 };
-video.ontimeupdate=()=>{if(!active?.meta||video.hidden||busy)return;active.current=clamp(video.currentTime+clipOffset,0,active.meta.duration);if(previewPlaying&&active.current>=active.end){video.pause();active.current=active.end;}sync();};
-video.onplay=()=>{$('play').textContent='Ⅱ';};video.onpause=video.onended=()=>{$('play').textContent='▶';previewPlaying=false;};
+video.ontimeupdate=()=>{if(!active?.meta||video.hidden||busy||!previewPlaying)return;active.current=clamp(video.currentTime+clipOffset,0,active.meta.duration);if(active.current>=active.end){video.pause();active.current=active.end;}sync();};
+video.onplay=()=>{if(!video.hidden)$('play').textContent='Ⅱ';};video.onpause=video.onended=()=>{if(active?.raw&&video.hidden)return;$('play').textContent='▶';previewPlaying=false;};
 $('format').onchange=()=>{$('quality-label').hidden=$('format').value==='avi';$('export-note').textContent=$('format').value==='avi'?'FFV1 无损编码，文件较大；建议用 VLC 播放。':'按原视频帧率导出，画面不拉伸。';};
 async function exportVideo(){
   if(!active?.meta||busy)return;

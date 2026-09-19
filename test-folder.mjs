@@ -35,7 +35,7 @@ try{
   const download=page.waitForEvent('download');await page.locator('#export').click();await(await download).saveAs(path.resolve('test-results/folder-crop.mp4'));await idle();
   await page.locator('#folder-input').setInputFiles(fixture);await idle();assert.equal(await page.locator('#file-count').textContent(),'6');assert.match(await page.locator('#import-summary').textContent(),/6 个视频已在列表中/);assert.equal(await page.locator('#crop-w').inputValue(),'320');
   for(let i=0;i<4;i++){await page.locator('#next-file').click();await idle();}
-  assert.equal(await page.locator('#active-name').textContent(),'overlay.AVI');assert(await page.locator('#frame').evaluate(e=>e.naturalWidth===1024));
+  assert.equal(await page.locator('#active-name').textContent(),'overlay.AVI');assert(await page.locator('#frame').evaluate(e=>e.naturalWidth===2432));
   await page.screenshot({path:'test-results/folder-desktop.png',fullPage:true});
   await page.locator('#next-file').click();await idle({error:true});assert.equal(await page.locator('#active-name').textContent(),'z-broken.mp4');assert(await page.locator('#next-file').isDisabled());assert(await page.locator('#previous-file').isEnabled());
   await page.locator('#previous-file').click();await idle();
