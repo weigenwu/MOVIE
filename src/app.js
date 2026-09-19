@@ -185,6 +185,7 @@ async function selectFile(item) {
     $('active-name').title = item.path;
     $('source-info').textContent = '正在读取视频…';
     if (!item.meta) await probe(item);
+    $('viewer').style.setProperty('--video-ratio', item.meta.width / item.meta.height);
     item.view ||= { zoom:1, x:0, y:0 };
     if (item.ext === 'avi' && item.raw === undefined) item.raw = await openRawAVI(item.file, item.meta);
     checkCancelled();
@@ -274,10 +275,25 @@ function sync() {
   $('output-size').textContent = `${crop.w} × ${crop.h}`; $('output-duration').textContent = `${(end-start).toFixed(3)} 秒`;
   $('crop-badge').textContent = `${crop.w} × ${crop.h}`; drawCrop();
 }
+function expandWorkspace(expanded) {
+  document.querySelector('.workspace').classList.toggle('expanded', expanded);
+  $('expand-workspace').setAttribute('aria-expanded', String(expanded));
+  $('expand-workspace').textContent = expanded ? '收起工作区' : '展开工作区';
+  dragging = null;
+  document.querySelector('.editor').scrollIntoView({ block:'start' });
+}
+$('expand-workspace').onclick = () => expandWorkspace($('expand-workspace').getAttribute('aria-expanded') !== 'true');
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('expand-workspace').getAttribute('aria-expanded') === 'true' && !document.querySelector('dialog[open]')) {
+    expandWorkspace(false); $('expand-workspace').focus();
+  }
+});
 function resize() {
   if (!active?.view) return;
   const area = $('viewer'), ratio = active.meta.width / active.meta.height, view = active.view;
   const w = Math.min(area.clientWidth - 16, (area.clientHeight - 16) * ratio), h = w / ratio;
+  if (view.fitWidth) { view.x *= w / view.fitWidth; view.y *= w / view.fitWidth; }
+  view.fitWidth = w;
   const maxX = Math.max(0, (w * view.zoom - area.clientWidth) / 2 + 8), maxY = Math.max(0, (h * view.zoom - area.clientHeight) / 2 + 8);
   view.x = clamp(view.x, -maxX, maxX); view.y = clamp(view.y, -maxY, maxY);
   $('media-stage').style.width = `${w}px`; $('media-stage').style.height = `${h}px`;

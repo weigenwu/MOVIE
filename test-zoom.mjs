@@ -17,6 +17,14 @@ try{
   await page.locator('#file-input').setInputFiles(path.resolve('../avi',name));await idle();
   await set('crop-w',320);await set('crop-h',240);await set('crop-x',1100);await set('crop-y',900);
   const original=await crop(),fit=await stage();
+  const normalViewer=await page.locator('#viewer').boundingBox();close(normalViewer.width/normalViewer.height,2432/2032,.003);
+  await page.locator('#expand-workspace').click();await page.waitForFunction(()=>document.querySelector('.workspace').classList.contains('expanded'));
+  const expandedViewer=await page.locator('#viewer').boundingBox();assert(expandedViewer.width>normalViewer.width);assert(expandedViewer.height>normalViewer.height);
+  close(expandedViewer.width/expandedViewer.height,2432/2032,.003);assert.deepEqual(await crop(),original);
+  await page.screenshot({path:'test-results/expanded-avi.png',fullPage:true});
+  await page.keyboard.press('Escape');assert.equal(await page.locator('#expand-workspace').getAttribute('aria-expanded'),'false');
+  // Return to the initial scroll position before screen-coordinate zoom checks.
+  await page.evaluate(()=>window.scrollTo(0,0));await page.locator('#viewer').evaluate(()=>new Promise(requestAnimationFrame));
   await page.locator('#zoom').fill('3');let box=await stage();close(box.width,fit.width*3,.1);assert.deepEqual(await crop(),original);
   // Zoom around the mouse, keeping the pointed source pixel in place.
   const area=await page.locator('#viewer').boundingBox(),mx=area.x+area.width*.6,my=area.y+area.height*.45;
@@ -48,6 +56,9 @@ try{
   // Each file keeps its own zoom/pan; MP4 playback and AVI seek retain the view.
   const mp4=(await readdir('../MP4')).find(n=>n.endsWith('.mp4'));
   await page.locator('#file-input').setInputFiles(path.resolve('../MP4',mp4));await idle();assert.equal(await page.locator('#zoom-value').textContent(),'1×');
+  let squareViewer=await page.locator('#viewer').boundingBox();close(squareViewer.width,squareViewer.height,.1);
+  await page.locator('#expand-workspace').click();squareViewer=await page.locator('#viewer').boundingBox();close(squareViewer.width,squareViewer.height,.1);
+  await page.screenshot({path:'test-results/expanded-square.png',fullPage:true});await page.locator('#expand-workspace').click();
   await page.locator('#zoom-in').click();await page.locator('#play').click();await page.waitForFunction(()=>document.getElementById('video').currentTime>.15);await page.locator('#play').click();
   await page.locator('.file-item').first().click();await idle();assert.equal(await page.locator('#zoom-value').textContent(),'3×');assert.deepEqual(await crop(),selected);
   await page.locator('#seek').fill('20');await page.locator('#seek').dispatchEvent('change');await idle();assert.equal(await page.locator('#zoom-value').textContent(),'3×');
