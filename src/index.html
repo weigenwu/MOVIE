@@ -15,11 +15,16 @@
     <div class="panel-heading"><h2>视频素材</h2><span id="file-count" class="count">0</span></div>
     <button id="drop-zone" class="drop-zone import-trigger"><span class="upload-icon">＋</span><strong>点击或拖入视频</strong><span>AVI / MP4 · 可多选</span></button>
     <input id="file-input" type="file" accept=".avi,.mp4,video/mp4,video/x-msvideo" multiple hidden>
+    <button id="import-folder" class="button folder-trigger">导入文件夹</button>
+    <input id="folder-input" type="file" webkitdirectory multiple hidden>
+    <small class="folder-note">包含子文件夹 · 仅在本机读取</small>
+    <div id="import-summary" class="import-summary" role="status" hidden></div>
     <div id="file-list" class="file-list"></div>
     <div class="library-foot">原文件保持不变。<br>刷新网页后，请重新选择视频。</div>
   </aside>
   <section class="editor">
     <div class="editor-title"><div><span class="eyebrow">剪辑工作台</span><h1 id="active-name">让画面，恰好合适。</h1></div><span id="source-info" class="meta">AVI & MP4</span></div>
+    <nav id="queue-nav" class="queue-nav" aria-label="逐个查看视频" hidden><button id="previous-file" class="button" disabled>‹ 上一个视频</button><span id="queue-position" aria-live="polite"></span><button id="next-file" class="button" disabled>下一个视频 ›</button></nav>
     <div class="viewer" id="viewer">
       <div id="empty-state" class="empty-state"><span class="empty-frame"><span>▶</span></span><h2>从一个视频开始</h2><p>导入视频，框选需要保留的画面，<br>再选择开始和结束时间。</p><button class="button primary import-trigger">选择 AVI 或 MP4</button><small>建议使用电脑上的 Chrome 或 Edge</small></div>
       <div id="media-stage" hidden><video id="video" playsinline preload="metadata"></video><img id="frame" alt="当前视频帧" hidden><canvas id="crop-canvas" aria-label="裁剪选框：拖动选择区域或在右侧输入像素" tabindex="0"></canvas><span id="crop-badge"></span></div>

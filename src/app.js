@@ -13,7 +13,12 @@ function progress(text, percent) { $('progress-text').textContent = text; if (pe
 function controls() {
   $('edit-controls').disabled = busy || !active?.meta;
   for (const id of ['play','previous','next','seek','start-range','end-range']) $(id).disabled = busy || !active?.meta;
-  document.querySelectorAll('.import-trigger,.file-item').forEach(el => el.disabled = busy);
+  document.querySelectorAll('.import-trigger,.folder-trigger,.file-item').forEach(el => el.disabled = busy);
+  const index = files.indexOf(active);
+  $('queue-nav').hidden = !files.length;
+  $('queue-position').textContent = index < 0 ? `共 ${files.length} 个` : `第 ${index + 1} / ${files.length} 个`;
+  $('previous-file').disabled = busy || index <= 0;
+  $('next-file').disabled = busy || index < 0 || index >= files.length - 1;
   $('progress-area').hidden = !busy;
   document.body.classList.toggle('busy', busy);
 }
@@ -91,31 +96,57 @@ async function probe(item) {
 function renderFiles() {
   $('file-count').textContent = files.length;
   $('file-list').replaceChildren(...files.map(item => {
-    const button = document.createElement('button'); button.className = `file-item${item === active ? ' active' : ''}`; button.title = item.file.name;
+    const button = document.createElement('button'); button.className = `file-item${item === active ? ' active' : ''}`; button.title = item.path;
+    button.setAttribute('aria-current', item === active ? 'true' : 'false');
     const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = item.ext.toUpperCase();
     const detail = document.createElement('span'); detail.className = 'file-detail';
     const name = document.createElement('span'); name.className = 'file-name'; name.textContent = item.file.name;
     const meta = document.createElement('span'); meta.className = 'file-meta'; meta.textContent = humanSize(item.file.size) + (item.meta ? ` · ${time(item.meta.duration)}` : '');
-    detail.append(name,meta); button.append(icon,detail); button.onclick = () => selectFile(item); return button;
+    detail.append(name);
+    if (item.path !== item.file.name) { const folder = document.createElement('span'); folder.className = 'file-path'; folder.textContent = item.path.slice(0, item.path.lastIndexOf('/')); detail.append(folder); }
+    detail.append(meta); button.append(icon,detail); button.onclick = () => selectFile(item); return button;
   })); controls();
+  $('file-list').querySelector('.active')?.scrollIntoView({ block:'nearest', inline:'nearest' });
 }
-async function importFiles(list) {
+async function importFiles(list, { folder = false } = {}) {
   if (busy) return;
+  const incoming = Array.from(list);
+  if (!incoming.length) return;
   const accepted = [], rejected = [];
-  for (const file of list) {
+  let ignored = 0, duplicates = 0;
+  const relativePath = file => file.webkitRelativePath || file.name;
+  if (folder) incoming.sort((a,b) => relativePath(a).localeCompare(relativePath(b), 'zh-CN', { numeric:true }));
+  const keyOf = file => JSON.stringify([relativePath(file),file.size,file.lastModified]);
+  const known = new Set(files.map(item => keyOf(item.file)));
+  for (const file of incoming) {
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['avi','mp4'].includes(ext)) { rejected.push(`${file.name}：只支持 AVI / MP4`); continue; }
-    if (file.size >= 2 ** 31) { rejected.push(`${file.name}：超过浏览器引擎的单文件 2 GiB 上限`); continue; }
-    if (!file.size) { rejected.push(`${file.name}：文件为空`); continue; }
-    if (files.some(f => f.file.name === file.name && f.file.size === file.size && f.file.lastModified === file.lastModified)) continue;
-    const item = { id:crypto.randomUUID(), file, ext }; files.push(item); accepted.push(item);
+    if (!['avi','mp4'].includes(ext)) { ignored++; continue; }
+    if (file.size >= 2 ** 31) { rejected.push(`${relativePath(file)}：超过单文件 2 GiB 上限`); continue; }
+    if (!file.size) { rejected.push(`${relativePath(file)}：文件为空`); continue; }
+    const key = keyOf(file);
+    if (known.has(key)) { duplicates++; continue; }
+    known.add(key);
+    const item = { id:crypto.randomUUID(), file, ext, path:relativePath(file) }; files.push(item); accepted.push(item);
   }
+  const summary = [`新增 ${accepted.length} 个视频`];
+  if (ignored) summary.push(`忽略 ${ignored} 个非 AVI / MP4 文件`);
+  if (duplicates) summary.push(`${duplicates} 个视频已在列表中`);
+  if (rejected.length) summary.push(`跳过 ${rejected.length} 个视频：${rejected.slice(0,3).join('；')}${rejected.length > 3 ? '…' : ''}`);
+  $('import-summary').textContent = summary.join(' · '); $('import-summary').hidden = false;
   renderFiles();
   if (accepted.length) await selectFile(accepted[0]);
-  if (rejected.length) status(rejected.join('；'), true);
+  else if (!files.length) status('没有可用的 AVI / MP4 视频，请检查所选文件或文件夹。', true);
 }
 document.querySelectorAll('.import-trigger').forEach(el => el.onclick = () => $('file-input').click());
 $('file-input').onchange = async e => { await importFiles(e.target.files); e.target.value = ''; };
+$('import-folder').onclick = () => {
+  if (!('webkitdirectory' in $('folder-input'))) { status('此浏览器不支持选择文件夹，请使用“导入视频”多选文件。', true); return; }
+  $('folder-input').click();
+};
+$('folder-input').onchange = async e => { await importFiles(e.target.files, { folder:true }); e.target.value = ''; };
+for (const [id,step] of [['previous-file',-1],['next-file',1]]) $(id).onclick = () => {
+  const item = files[files.indexOf(active) + step]; if (!busy && item) selectFile(item);
+};
 document.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); $('drop-zone').classList.add('dragover'); } });
 document.addEventListener('dragleave', e => { if (!e.relatedTarget) $('drop-zone').classList.remove('dragover'); });
 document.addEventListener('drop', e => { e.preventDefault(); $('drop-zone').classList.remove('dragover'); if (e.dataTransfer.files.length) importFiles(e.dataTransfer.files); });
@@ -130,12 +161,17 @@ async function nativeVideo(url, timeout = 12000) {
 }
 async function selectFile(item) {
   if (busy) return;
+  if (active?.meta) active.exportSettings = { format:$('format').value, quality:$('quality').value, audio:$('audio').checked };
   await task('正在读取视频…', async () => {
     video.pause(); active = item; $('result').hidden = true; $('media-stage').hidden = true; $('empty-state').hidden = true; renderFiles();
-    if (!item.meta) await probe(item);
     $('active-name').textContent = item.file.name;
+    $('active-name').title = item.path;
+    $('source-info').textContent = '正在读取视频…';
+    if (!item.meta) await probe(item);
     $('source-info').textContent = `${item.meta.width} × ${item.meta.height} · ${Number(item.meta.fps.toFixed(3))} fps`;
-    $('aspect').value = item.aspect; $('audio').checked = item.meta.audio;
+    item.exportSettings ||= { format:'mp4', quality:'18', audio:item.meta.audio };
+    $('aspect').value = item.aspect; $('audio').checked = item.exportSettings.audio;
+    $('format').value = item.exportSettings.format; $('quality').value = item.exportSettings.quality; $('format').onchange();
     $('audio').disabled = !item.meta.audio;
     $('media-stage').hidden = false; sync(); resize();
     if (item.ext === 'mp4' && item.native !== false) {
