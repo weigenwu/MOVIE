@@ -1,4 +1,5 @@
 import { openRawAVI } from './raw-avi.js';
+import { folderSetting, writeToFolder } from './save-location.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
 const files = [];
@@ -7,6 +8,9 @@ let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = fa
 let previewEpoch = 0, previewTimer = null;
 let panMode = false, spacePan = false;
 let logLines = [], resultURL = null;
+let outputFolder = null, outputPermission = 'prompt', locationReady = false, locationBusy = false, savingFile = false, lastExport = null;
+let folderRemembered = true;
+const canChooseFolder = typeof window.showDirectoryPicker === 'function' && window.isSecureContext;
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 const even = n => Math.floor(n / 2) * 2;
 const humanSize = n => n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GiB` : `${(n / 1024 ** 2).toFixed(1)} MB`;
@@ -14,6 +18,13 @@ function time(n) { n = Math.max(0, n || 0); return `${Math.floor(n / 60).toStrin
 function status(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
 function progress(text, percent) { $('progress-text').textContent = text; if (percent == null) $('progress').removeAttribute('value'); else $('progress').value = clamp(percent, 0, 100); }
 function controls() {
+  const locked = busy || locationBusy || !locationReady;
+  $('choose-output').disabled = locked || !canChooseFolder;
+  $('grant-output').disabled = locked;
+  $('clear-output').disabled = locked;
+  $('save-again').disabled = locked;
+  $('export').disabled = locked;
+  $('cancel').disabled = savingFile;
   $('edit-controls').disabled = busy || !active?.meta;
   $('view-controls').disabled = busy || !active?.meta;
   for (const id of ['play','previous','next','seek','start-range','end-range']) $(id).disabled = busy || !active?.meta;
@@ -38,7 +49,7 @@ async function task(label, fn) {
   } finally { busy = false; processingDuration = 0; fetchAbort = null; controls(); }
 }
 function checkCancelled() { if (cancelled) throw new Error('操作已取消'); }
-$('cancel').onclick = () => { cancelled = true; fetchAbort?.abort(); engine?.terminate(); engine = null; mounted = null; };
+$('cancel').onclick = () => { if(savingFile)return; cancelled = true; fetchAbort?.abort(); engine?.terminate(); engine = null; mounted = null; };
 async function getEngine() {
   if (engine?.loaded) return engine;
   progress('首次使用：加载视频处理引擎（约 31 MB）');
@@ -393,9 +404,93 @@ $('play').onclick=async()=>{
 video.ontimeupdate=()=>{if(!active?.meta||video.hidden||busy||!previewPlaying)return;active.current=clamp(video.currentTime+clipOffset,0,active.meta.duration);if(active.current>=active.end){video.pause();active.current=active.end;}sync();};
 video.onplay=()=>{if(!video.hidden)$('play').textContent='Ⅱ';};video.onpause=video.onended=()=>{if(active?.raw&&video.hidden)return;$('play').textContent='▶';previewPlaying=false;};
 $('format').onchange=()=>{$('quality-label').hidden=$('format').value==='avi';$('export-note').textContent=$('format').value==='avi'?'FFV1 无损编码，文件较大；建议用 VLC 播放。':'按原视频帧率导出，画面不拉伸。';};
+function outputLocation(note) {
+  $('output-folder').textContent = outputFolder ? `${folderRemembered ? '已记住' : '本次保存'}：${outputFolder.name}${outputPermission === 'granted' ? ' · 自动保存' : ' · 待允许访问'}` : '普通下载（由浏览器决定位置）';
+  $('choose-output').textContent = outputFolder ? '更换保存文件夹' : '选择保存文件夹';
+  $('grant-output').hidden = !outputFolder || outputPermission === 'granted';
+  $('clear-output').hidden = !outputFolder;
+  $('save-again').hidden = !lastExport || !outputFolder || lastExport.saved;
+  $('folder-note').textContent = note || (outputFolder && !folderRemembered ? '本次可直接保存；浏览器未能记住该位置，关闭网页后需要重新选择。' : canChooseFolder ? '首次选择后记住，后续导出自动保存；同名文件自动编号。' : '此浏览器仅支持普通下载；记住文件夹请使用电脑上的 Chrome 或 Edge。');
+  controls();
+}
+async function restoreOutputLocation() {
+  let note;
+  try {
+    if (canChooseFolder) {
+      const remembered = await folderSetting('get');
+      outputFolder = remembered?.kind === 'directory' && typeof remembered.queryPermission === 'function' ? remembered : null;
+      if (outputFolder) outputPermission = await outputFolder.queryPermission({ mode:'readwrite' });
+    }
+  } catch { note = '未能恢复上次保存位置，请重新选择文件夹。'; }
+  finally { locationReady = true; outputLocation(note); }
+}
+$('choose-output').onclick = async () => {
+  if (busy || locationBusy || !locationReady || !canChooseFolder) return;
+  locationBusy = true; stopPlayback(); controls();
+  try {
+    const folder = await window.showDirectoryPicker({ id:'framecut-output', mode:'readwrite' });
+    outputFolder = folder; outputPermission = await folder.queryPermission({ mode:'readwrite' });
+    if (lastExport) lastExport.saved = false;
+    try { await folderSetting('set', folder); folderRemembered = true; }
+    catch { folderRemembered = false; }
+    outputLocation();
+  } catch (error) { if (error.name !== 'AbortError') status('无法选择保存文件夹，请在电脑上的 Chrome / Edge 打开网页后重试。', true); }
+  finally { locationBusy = false; controls(); }
+};
+async function ensureOutputAccess() {
+  if (!outputFolder) return true;
+  try {
+    outputPermission = await outputFolder.queryPermission({ mode:'readwrite' });
+    if (outputPermission !== 'granted') outputPermission = await outputFolder.requestPermission({ mode:'readwrite' });
+  } catch { outputPermission = 'prompt'; }
+  outputLocation();
+  if (outputPermission !== 'granted') status('请允许保存到已记住的文件夹；也可更换文件夹或恢复普通下载。', true);
+  return outputPermission === 'granted';
+}
+$('grant-output').onclick = async () => {
+  if (busy || locationBusy) return;
+  locationBusy = true; controls();
+  try { if (await ensureOutputAccess()) status('已允许访问保存文件夹，后续导出会直接保存。'); }
+  finally { locationBusy = false; controls(); }
+};
+$('clear-output').onclick = async () => {
+  if (busy || locationBusy) return;
+  locationBusy = true; controls();
+  try { await folderSetting('set', null); outputFolder = null; outputPermission = 'prompt'; outputLocation(); }
+  catch { status('未能清除保存位置，请稍后重试。', true); }
+  finally { locationBusy = false; controls(); }
+};
+async function saveCompletedExport() {
+  savingFile = true; controls(); progress('正在保存到所选文件夹…');
+  try {
+    const savedName = await writeToFolder(outputFolder, lastExport.name, lastExport.blob);
+    lastExport.saved = true;
+    $('result-title').textContent = '已保存到文件夹';
+    $('result-info').textContent = `${outputFolder.name} / ${savedName} · ${humanSize(lastExport.blob.size)}`;
+    $('result-note').textContent = '已自动保存。同名文件自动编号，不覆盖已有文件。';
+    $('download').textContent = '另存一份（普通下载）';
+    status(`已保存到「${outputFolder.name}」：${savedName}`);
+  } catch {
+    // Keep the encoded Blob even if createWritable, write, or close fails.
+    lastExport.saved = false;
+    $('result-title').textContent = '已生成，尚未保存';
+    $('result-note').textContent = '可重试保存或更换文件夹，无需重新处理视频；也可点击普通下载。';
+    $('download').textContent = '普通下载';
+    try { outputPermission = await outputFolder.queryPermission({ mode:'readwrite' }); } catch { outputPermission = 'prompt'; }
+    status('文件夹写入失败。请检查权限或剩余磁盘空间；视频已保留，可重试保存或普通下载。', true);
+  } finally { savingFile = false; outputLocation(); }
+}
+$('save-again').onclick = async () => {
+  if (busy || locationBusy || !lastExport || !outputFolder) return;
+  await task('正在准备保存…', async () => { if (await ensureOutputAccess()) { checkCancelled(); await saveCompletedExport(); } });
+};
+restoreOutputLocation();
 async function exportVideo(){
-  if(!active?.meta||busy)return;
+  if(!active?.meta||busy||locationBusy||!locationReady)return;
   await task('正在准备导出…',async()=>{
+    // Ask while the export click still supplies user activation, before encoding.
+    if (!await ensureOutputAccess()) return;
+    checkCancelled();
     const path=await mount(active),format=$('format').value,c={...active.crop},duration=active.end-active.start;
     if(!(duration>0&&c.w>=2&&c.h>=2&&c.x+c.w<=active.meta.width&&c.y+c.h<=active.meta.height))throw new Error('裁剪参数无效');
     const out=`/output.${format}`,name=`${active.file.name.replace(/\.[^.]+$/,'')}_crop_${c.w}x${c.h}_${active.start.toFixed(3)}-${active.end.toFixed(3)}.${format}`;
@@ -408,9 +503,13 @@ async function exportVideo(){
     args.push('-threads','1',out);
     try{
       await exec(args);progress('正在准备下载…');const data=await engine.readFile(out);if(!data.length)throw new Error('导出文件为空');
-      if(resultURL)URL.revokeObjectURL(resultURL);resultURL=URL.createObjectURL(new Blob([data],{type:format==='mp4'?'video/mp4':'video/x-msvideo'}));
+      const blob=new Blob([data],{type:format==='mp4'?'video/mp4':'video/x-msvideo'});
+      lastExport={blob,name,saved:false};
+      if(resultURL)URL.revokeObjectURL(resultURL);resultURL=URL.createObjectURL(blob);
       $('download').href=resultURL;$('download').download=name;$('result-info').textContent=`${name} · ${humanSize(data.length)}`;$('result').hidden=false;
-      status(`导出完成：${c.w} × ${c.h}，${duration.toFixed(3)} 秒。原视频未修改。`);$('download').click();
+      $('result-title').textContent='导出完成';$('download').textContent='保存视频';$('result-note').textContent='若没有自动下载，请点击保存。';outputLocation();
+      if(outputFolder)await saveCompletedExport();
+      else{status(`导出完成：${c.w} × ${c.h}，${duration.toFixed(3)} 秒。原视频未修改。`);$('download').click();}
     }finally{await removeTemp(out);}
   });
 }
