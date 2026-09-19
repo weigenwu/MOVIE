@@ -1,0 +1,8 @@
+{
+  "name": "video-crop-studio",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": { "build": "node build.mjs", "preview": "node serve.mjs" },
+  "dependencies": { "@ffmpeg/ffmpeg": "0.12.15", "@ffmpeg/core": "0.12.10" },
+  "devDependencies": { "playwright": "1.58.2" }
+}
