@@ -153,11 +153,13 @@ async function frameAt(seconds) {
   const path = await mount(active);
   progress('正在读取当前帧…');
   const t = clamp(seconds, 0, Math.max(0,active.meta.duration - 1 / active.meta.fps));
-  await exec(['-ss',t.toFixed(6),'-i',path,'-frames:v','1','-vf',"scale='min(1024,iw)':-2,setsar=1",'-q:v','2','/frame.jpg']);
-  const bytes = await engine.readFile('/frame.jpg'); await removeTemp('/frame.jpg');
+  // The bundled MJPEG encoder fails on the supplied overlay AVI with a buffer
+  // reallocation/out-of-bounds error. PNG avoids that path; exports use the source.
+  await exec(['-ss',t.toFixed(6),'-i',path,'-frames:v','1','-vf',"scale='min(1024,iw)':-2,setsar=1",'-threads','1','/frame.png']);
+  const bytes = await engine.readFile('/frame.png'); await removeTemp('/frame.png');
   if (!bytes.length) throw new Error('该时间点没有可读取的画面');
   if (active.frameURL) URL.revokeObjectURL(active.frameURL);
-  active.frameURL = URL.createObjectURL(new Blob([bytes], { type:'image/jpeg' }));
+  active.frameURL = URL.createObjectURL(new Blob([bytes], { type:'image/png' }));
   $('frame').src = active.frameURL; await $('frame').decode();
   video.hidden = true; $('frame').hidden = false; $('preview-label').textContent = '按帧预览 · 点击播放生成片段预览';
 }

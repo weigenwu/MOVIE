@@ -48,7 +48,10 @@ npm run preview
 - 真实大 AVI 完整 42.333 秒、800 × 600 导出；选框拖动、比例、AVI 播放预览、取消后重试、切换素材、错误文件恢复、保留音频 / 静音与手机宽度布局。
 - 导入和处理过程中未发生视频网络上传。
 
+预览修复：overlay AVI 在旧版 JPEG 预览编码时可复现 `Buffer reallocation failed` / `memory access out of bounds`；单独解码成功，改为 PNG 预览后通过。已补测 5 个真实 AVI 的预览与切换、overlay 在 1/20/41 秒定位、播放、MP4/FFV1 裁剪导出，并以原生 FFmpeg 验证无损输出对应首帧像素完全一致。
+
 本地重现：`node test-browser.mjs <包含 MP4 和 avi 子目录的路径>`。
+overlay 回归检查：在本项目目录运行 `node test-overlay.mjs`，测试数据位于上一级的 `avi` 目录，且包含 `*_overlay.avi`。
 独立验证脚本 `verify-exports.py` 需要把 `imageio-ffmpeg` 安装到 `test-results/native-tools`。
 `test-interactions.mjs` 另需要 `test-results/audio-source.mp4`（带声音的 4 秒测试视频）。
 
