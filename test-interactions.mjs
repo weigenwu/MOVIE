@@ -10,7 +10,7 @@ async function set(id,v){await page.locator('#'+id).fill(String(v));await page.l
 try{
   await page.goto('http://127.0.0.1:4173');
   const names=await readdir('../avi');await page.locator('#file-input').setInputFiles(path.resolve('../avi',names.find(n=>n.endsWith('.avi'))));await idle();
-  const box=await page.locator('#crop-canvas').boundingBox();
+  const box=await page.locator('#media-stage').boundingBox();
   // Resize full frame through its bottom-right corner, then move the selection.
   await page.mouse.move(box.x+box.width-2,box.y+box.height-2);await page.mouse.down();await page.mouse.move(box.x+box.width*.5,box.y+box.height*.5,{steps:10});await page.mouse.up();
   const width=Number(await page.locator('#crop-w').inputValue());assert(width>1100&&width<1300);

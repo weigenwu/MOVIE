@@ -5,6 +5,7 @@ const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
 let previewEpoch = 0, previewTimer = null;
+let panMode = false, spacePan = false;
 let logLines = [], resultURL = null;
 const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 const even = n => Math.floor(n / 2) * 2;
@@ -14,6 +15,7 @@ function status(text, error = false) { $('message').textContent = text; $('messa
 function progress(text, percent) { $('progress-text').textContent = text; if (percent == null) $('progress').removeAttribute('value'); else $('progress').value = clamp(percent, 0, 100); }
 function controls() {
   $('edit-controls').disabled = busy || !active?.meta;
+  $('view-controls').disabled = busy || !active?.meta;
   for (const id of ['play','previous','next','seek','start-range','end-range']) $(id).disabled = busy || !active?.meta;
   document.querySelectorAll('.import-trigger,.folder-trigger,.file-item').forEach(el => el.disabled = busy);
   const index = files.indexOf(active);
@@ -166,11 +168,13 @@ async function selectFile(item) {
   if (active?.meta) active.exportSettings = { format:$('format').value, quality:$('quality').value, audio:$('audio').checked };
   await task('正在读取视频…', async () => {
     if (active?.raw && active !== item) { URL.revokeObjectURL(active.frameURL); active.frameURL = null; active.frameIndex = null; }
-    video.pause(); active = item; $('result').hidden = true; $('media-stage').hidden = true; $('empty-state').hidden = true; renderFiles();
+    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; updatePanMode();
+    $('result').hidden = true; $('media-stage').hidden = true; canvas.hidden = true; $('crop-badge').hidden = true; $('empty-state').hidden = true; renderFiles();
     $('active-name').textContent = item.file.name;
     $('active-name').title = item.path;
     $('source-info').textContent = '正在读取视频…';
     if (!item.meta) await probe(item);
+    item.view ||= { zoom:1, x:0, y:0 };
     if (item.ext === 'avi' && item.raw === undefined) item.raw = await openRawAVI(item.file, item.meta);
     checkCancelled();
     $('source-info').textContent = `${item.meta.width} × ${item.meta.height} · ${Number(item.meta.fps.toFixed(3))} fps`;
@@ -178,7 +182,7 @@ async function selectFile(item) {
     $('aspect').value = item.aspect; $('audio').checked = item.exportSettings.audio;
     $('format').value = item.exportSettings.format; $('quality').value = item.exportSettings.quality; $('format').onchange();
     $('audio').disabled = !item.meta.audio;
-    $('media-stage').hidden = false; sync(); resize();
+    $('media-stage').hidden = false; canvas.hidden = false; $('crop-badge').hidden = false; sync(); resize();
     if (item.ext === 'mp4' && item.native !== false) {
       item.nativeURL ||= URL.createObjectURL(item.file);
       item.native = await nativeVideo(item.nativeURL); checkCancelled();
@@ -260,22 +264,58 @@ function sync() {
   $('crop-badge').textContent = `${crop.w} × ${crop.h}`; drawCrop();
 }
 function resize() {
-  if (!active?.meta) return;
-  const area = $('viewer').getBoundingClientRect(); const ratio = active.meta.width / active.meta.height;
-  const w = Math.min(area.width - 16, (area.height - 16) * ratio), h = w / ratio;
+  if (!active?.view) return;
+  const area = $('viewer'), ratio = active.meta.width / active.meta.height, view = active.view;
+  const w = Math.min(area.clientWidth - 16, (area.clientHeight - 16) * ratio), h = w / ratio;
+  const maxX = Math.max(0, (w * view.zoom - area.clientWidth) / 2 + 8), maxY = Math.max(0, (h * view.zoom - area.clientHeight) / 2 + 8);
+  view.x = clamp(view.x, -maxX, maxX); view.y = clamp(view.y, -maxY, maxY);
   $('media-stage').style.width = `${w}px`; $('media-stage').style.height = `${h}px`;
-  canvas.width = Math.round(w * devicePixelRatio); canvas.height = Math.round(h * devicePixelRatio); drawCrop();
+  $('media-stage').style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+  // Keep the overlay at viewport size even at 8x, rather than allocating a huge canvas.
+  const cw = Math.round(area.clientWidth * devicePixelRatio), ch = Math.round(area.clientHeight * devicePixelRatio);
+  if (canvas.width !== cw) canvas.width = cw; if (canvas.height !== ch) canvas.height = ch;
+  $('zoom').value = view.zoom; $('zoom-value').textContent = `${Number(view.zoom.toFixed(2))}×`;
+  $('zoom-out').disabled = view.zoom <= 1; $('zoom-in').disabled = view.zoom >= 8;
+  drawCrop();
 }
 new ResizeObserver(resize).observe($('viewer'));
+function zoomTo(value, clientX, clientY) {
+  if (busy || !active?.view) return;
+  const rect = $('viewer').getBoundingClientRect(), view = active.view, next = clamp(value, 1, 8);
+  const x = clientX == null ? 0 : clientX - (rect.left + rect.width / 2), y = clientY == null ? 0 : clientY - (rect.top + rect.height / 2);
+  view.x = x - (x - view.x) * next / view.zoom; view.y = y - (y - view.y) * next / view.zoom;
+  view.zoom = next; dragging = null; resize();
+}
+function updatePanMode() {
+  $('pan-mode').setAttribute('aria-pressed', String(panMode));
+  canvas.classList.toggle('pan-ready', panMode || spacePan);
+  canvas.classList.toggle('panning', dragging?.mode === 'pan');
+}
+$('zoom').oninput = () => zoomTo(Number($('zoom').value));
+$('zoom-in').onclick = () => zoomTo(active.view.zoom * 1.25);
+$('zoom-out').onclick = () => zoomTo(active.view.zoom / 1.25);
+$('zoom-reset').onclick = () => { active.view = { zoom:1, x:0, y:0 }; dragging = null; resize(); };
+$('pan-mode').onclick = () => { panMode = !panMode; updatePanMode(); };
+$('viewer').addEventListener('wheel', e => {
+  if (busy || !active?.view || e.ctrlKey || e.metaKey) return;
+  e.preventDefault(); zoomTo(active.view.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+}, { passive:false });
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || !active?.view || busy || e.target.closest('input,textarea,select,button,a,[contenteditable]')) return;
+  e.preventDefault(); spacePan = true; updatePanMode();
+});
+document.addEventListener('keyup', e => { if (e.code === 'Space') { spacePan = false; updatePanMode(); } });
+window.addEventListener('blur', () => { spacePan = false; dragging = null; updatePanMode(); });
 function drawCrop() {
-  if (!active?.meta) return;
-  const {crop:c,meta:m} = active, sx = canvas.width / m.width, sy = canvas.height / m.height;
-  const x = c.x*sx, y = c.y*sy, w = c.w*sx, h = c.h*sy, unit=devicePixelRatio;
+  if (!active?.meta || canvas.hidden) return;
+  const {crop:c,meta:m} = active, box = $('media-stage').getBoundingClientRect(), overlay = canvas.getBoundingClientRect(), unit=devicePixelRatio;
+  const sx = box.width / m.width * unit, sy = box.height / m.height * unit, ox = (box.left - overlay.left) * unit, oy = (box.top - overlay.top) * unit;
+  const x = ox+c.x*sx, y = oy+c.y*sy, w = c.w*sx, h = c.h*sy;
   ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#0009'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.clearRect(x,y,w,h);
   ctx.strokeStyle='#bca5ff'; ctx.lineWidth=1.5*unit; ctx.strokeRect(x,y,w,h);
   ctx.strokeStyle='#ffffff36'; ctx.lineWidth=unit*.6;
   for(let i=1;i<=2;i++){ctx.beginPath();ctx.moveTo(x+w*i/3,y);ctx.lineTo(x+w*i/3,y+h);ctx.moveTo(x,y+h*i/3);ctx.lineTo(x+w,y+h*i/3);ctx.stroke();}
-  ctx.fillStyle='#ede4ff'; for(const [px,py] of handles(c)){ctx.fillRect(px*sx-3*unit,py*sy-3*unit,6*unit,6*unit);}
+  ctx.fillStyle='#ede4ff'; for(const [px,py] of handles(c)){ctx.fillRect(ox+px*sx-3*unit,oy+py*sy-3*unit,6*unit,6*unit);}
 }
 function handles(c){return [[c.x,c.y],[c.x+c.w/2,c.y],[c.x+c.w,c.y],[c.x+c.w,c.y+c.h/2],[c.x+c.w,c.y+c.h],[c.x+c.w/2,c.y+c.h],[c.x,c.y+c.h],[c.x,c.y+c.h/2]];}
 function normalizedCrop(c) {
@@ -284,16 +324,21 @@ function normalizedCrop(c) {
   return {x:clamp(even(c.x),0,even(m.width-w)),y:clamp(even(c.y),0,even(m.height-h)),w,h};
 }
 function aspectRatio(){return active.aspect==='original'?active.meta.width/active.meta.height:active.aspect==='free'?0:Number(active.aspect);}
-function position(e){const rect=canvas.getBoundingClientRect();return {x:clamp((e.clientX-rect.left)/rect.width*active.meta.width,0,active.meta.width),y:clamp((e.clientY-rect.top)/rect.height*active.meta.height,0,active.meta.height)};}
+function position(e){const rect=$('media-stage').getBoundingClientRect();return {x:clamp((e.clientX-rect.left)/rect.width*active.meta.width,0,active.meta.width),y:clamp((e.clientY-rect.top)/rect.height*active.meta.height,0,active.meta.height)};}
 canvas.onpointerdown=e=>{
-  if(busy||!active?.meta)return; stopPlayback(); const p=position(e),c=active.crop;
-  const threshold=12/canvas.getBoundingClientRect().width*active.meta.width;
+  if(busy||!active?.meta||!e.isPrimary||![0,1].includes(e.button))return; stopPlayback();
+  if(panMode||spacePan||e.button===1){dragging={mode:'pan',startX:e.clientX,startY:e.clientY,x:active.view.x,y:active.view.y};canvas.setPointerCapture(e.pointerId);e.preventDefault();updatePanMode();return;}
+  const rect=$('media-stage').getBoundingClientRect();if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)return;
+  const p=position(e),c=active.crop;
+  const threshold=12/rect.width*active.meta.width;
   const handle=handles(c).findIndex(([x,y])=>Math.abs(x-p.x)<threshold&&Math.abs(y-p.y)<threshold);
   const inside=p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
   dragging={start:p,crop:{...c},handle,mode:handle>=0?'resize':inside?'move':'new'};canvas.setPointerCapture(e.pointerId);e.preventDefault();
 };
 canvas.onpointermove=e=>{
-  if(!dragging||!active)return;const p=position(e),d=dragging,c=d.crop,m=active.meta;
+  if(!dragging||!active)return;
+  if(dragging.mode==='pan'){active.view.x=dragging.x+e.clientX-dragging.startX;active.view.y=dragging.y+e.clientY-dragging.startY;resize();return;}
+  const p=position(e),d=dragging,c=d.crop,m=active.meta;
   if(d.mode==='move'){active.crop=normalizedCrop({...c,x:c.x+p.x-d.start.x,y:c.y+p.y-d.start.y});sync();return;}
   let left=c.x,right=c.x+c.w,top=c.y,bottom=c.y+c.h;
   if(d.mode==='new'){left=d.start.x;right=p.x;top=d.start.y;bottom=p.y;}
@@ -302,7 +347,7 @@ canvas.onpointermove=e=>{
   if(ratio){if(w/h>ratio)w=h*ratio;else h=w/ratio;if(d.mode==='resize'){if([0,6,7].includes(d.handle))x=c.x+c.w-w;if([0,1,2].includes(d.handle))y=c.y+c.h-h;}else{if(p.x<d.start.x)x=d.start.x-w;if(p.y<d.start.y)y=d.start.y-h;}}
   active.crop=normalizedCrop({x,y,w:Math.min(w,m.width-x),h:Math.min(h,m.height-y)});sync();
 };
-canvas.onpointerup=canvas.onpointercancel=()=>{dragging=null;};
+canvas.onpointerup=canvas.onpointercancel=canvas.onlostpointercapture=()=>{dragging=null;updatePanMode();};
 canvas.onkeydown=e=>{if(!active?.meta||busy)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active.crop=normalizedCrop({...active.crop,x:active.crop.x+x,y:active.crop.y+y});sync();}};
 for(const key of ['x','y','w','h'])$('crop-'+key).onchange=()=>{
   const value=Number($('crop-'+key).value);if(!Number.isFinite(value)){sync();return;}
