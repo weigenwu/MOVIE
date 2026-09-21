@@ -4,9 +4,9 @@
 
 视频只在使用者的浏览器中处理，应用不上传视频。源文件始终保持不变。
 
-公开使用入口：https://weigenwu.github.io/MOVIE/ 。无需登录，网址不含邮箱信息。此入口独立于原来的 Sites 地址。
+待发布的新入口：https://weigenwu.github.io/MOVIE/ 。已配置公开访问和 HTTPS，网址不含邮箱信息，此入口独立于原来的 Sites 地址。2026-09-21 首次发布被 GitHub 账号账单锁定阻止，尚未上线；解除限制后重新运行 `Publish FrameCut`，并完成匿名访问、导入和导出验证后才能分享。
 
-GitHub Pages 由 `.github/workflows/pages.yml` 在推送 `codex/video-crop-studio` 时构建并发布，仅上传 `dist` 中的网页和处理引擎，不上传原视频、测试样本、截图或保存文件夹记录。`.openai/hosting.json` 保留旧 Sites 项目的标识；当前分享入口使用 GitHub Pages。
+GitHub Pages 由 `.github/workflows/pages.yml` 在推送 `codex/video-crop-studio` 时构建并发布，也可手动运行。仅上传 `dist` 中的网页和处理引擎，不上传原视频、测试样本、截图或保存文件夹记录。`.openai/hosting.json` 保留旧 Sites 项目的标识；计划在新入口验证成功后使用 GitHub Pages 分享。
 
 ## 使用
 
