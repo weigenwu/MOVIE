@@ -5,7 +5,9 @@
 视频只在使用者的浏览器中处理，应用不上传视频。源文件始终保持不变。
 
 免费备用入口（GitHub 仓库 + raw.githack.com 静态服务）：
-https://rawcdn.githack.com/weigenwu/MOVIE/878b37fcc7c20104dfd80963ce6043b3e527ae7c/index.html
+https://rawcdn.githack.com/weigenwu/MOVIE/06d9c6f8695aac9cf3a8993953d3ca9e4379eb45/index.html
+
+2026-09-23 更新：扩大四角控制点与可点击范围，修复鼠标落在视频边缘外时无法开始拖动的问题，悬停显示调整方向。已验证四角在普通/3 倍放大、自由/1:1 比例下拖动，并完成拖动后的 MP4 导出。运行 `node test-crop-handles.mjs` 检查各边角命中、边界外点击与缩放规则。请使用上方新版链接；旧提交链接保留旧版。
 
 2026-09-22 已用浏览器验证 MP4 和 1.75 GiB AVI 导入、预览及 320 × 240 / 1 秒 MP4 导出。用户已确认目标电脑在普通网络下能打开编辑器。首次访问可能需要点击 “Open the page”；使用者无需登录。这是免费第三方服务，不保证所有网络始终可达。
 
