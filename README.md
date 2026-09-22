@@ -4,9 +4,14 @@
 
 视频只在使用者的浏览器中处理，应用不上传视频。源文件始终保持不变。
 
-待发布的新入口：https://weigenwu.github.io/MOVIE/ 。已配置公开访问和 HTTPS，网址不含邮箱信息，此入口独立于原来的 Sites 地址。2026-09-21 首次发布被 GitHub 账号账单锁定阻止，尚未上线；解除限制后重新运行 `Publish FrameCut`，并完成匿名访问、导入和导出验证后才能分享。
+免费备用入口（GitHub 仓库 + raw.githack.com 静态服务）：
+https://rawcdn.githack.com/weigenwu/MOVIE/878b37fcc7c20104dfd80963ce6043b3e527ae7c/index.html
 
-GitHub Pages 由 `.github/workflows/pages.yml` 在推送 `codex/video-crop-studio` 时构建并发布，也可手动运行。仅上传 `dist` 中的网页和处理引擎，不上传原视频、测试样本、截图或保存文件夹记录。`.openai/hosting.json` 保留旧 Sites 项目的标识；计划在新入口验证成功后使用 GitHub Pages 分享。
+2026-09-22 已用浏览器验证 MP4 和 1.75 GiB AVI 导入、预览及 320 × 240 / 1 秒 MP4 导出。用户已确认目标电脑在普通网络下能打开编辑器。首次访问可能需要点击 “Open the page”；使用者无需登录。这是免费第三方服务，不保证所有网络始终可达。
+
+`codex/static-site` 保存可直接托管的发布文件，WebAssembly 分段使用 `.wasm` 扩展名，避免静态服务把 `.bin` 请求重定向回 GitHub。该服务为不同仓库共用浏览器来源，因此这个入口只在当前页面记住保存文件夹，连续导出无需重选，刷新或关闭后需重新选择；目录访问句柄不存入 IndexedDB。专用域名版本仍支持下次访问时恢复目录。运行静态分支中的 `node verify-release.mjs` 可验证引擎完整性和目录处理规则。更新时推送静态分支，并用新提交的完整 hash 生成 CDN URL；固定提交链接不会自动更新。
+
+GitHub Pages 地址 https://weigenwu.github.io/MOVIE/ 尚未上线。2026-09-22 重试 https://github.com/weigenwu/MOVIE/actions/runs/35748783132 仍在构建开始前被账号账单锁定阻止。`.github/workflows/pages.yml` 保留以供账号限制解除后使用。Netlify 原地址已返回 404，用户登录页提示账号已暂停；`.openai/hosting.json` 仅保留旧 Sites 项目标识。所有发布均排除原视频、测试样本、截图和本地保存目录记录。
 
 ## 使用
 
