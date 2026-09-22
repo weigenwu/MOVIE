@@ -2,7 +2,7 @@
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/09211501e7bb7fe259cde5ef855924f8a9e80965
+Source: https://github.com/weigenwu/MOVIE/tree/9b937d7b6e04df2d1c143266d5e5b9310df3e174
 
 This branch has no GitHub Actions workflow. It can be served by any HTTPS static host, or through raw.githack.com using an immutable commit URL.
 
@@ -11,3 +11,5 @@ Third-party components: @ffmpeg/ffmpeg 0.12.15 (MIT) and @ffmpeg/core 0.12.10 (G
 CDN adaptations: the two WebAssembly segments use `.wasm` names so raw.githack.com serves them directly. On the shared githack.com origin, directory handles are kept only in the current page and never persisted to IndexedDB; repeated exports in that page still use the chosen folder. A dedicated hosting origin retains the original persistent-folder behavior.
 
 Run `node verify-release.mjs` to check release engine integrity and shared-origin directory handling.
+
+2026-09-23: All four crop corners now have larger handles and zoom-independent hit targets, including the portion outside video edges. Hover shows the resize direction. Run `node test-crop-handles.mjs` for the edge/zoom regression check. Browser checks covered all four corners at 1x and 3x, 1:1 aspect lock, and MP4 export.
