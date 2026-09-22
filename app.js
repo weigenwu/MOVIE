@@ -1,5 +1,5 @@
 import { openRawAVI } from './raw-avi.js';
-import { folderSetting, writeToFolder } from './save-location.js';
+import { folderSetting, writeToFolder, sharedHosting } from './save-location.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
 const files = [];
@@ -55,7 +55,7 @@ async function getEngine() {
   progress('首次使用：加载视频处理引擎（约 31 MB）');
   if (!wasmURL) {
     const parts = await Promise.all([1,2].map(async n => {
-      const r = await fetch(new URL(`./vendor/core-${n}.bin`, import.meta.url), { signal: fetchAbort?.signal });
+      const r = await fetch(new URL(`./vendor/core-${n}.wasm`, import.meta.url), { signal: fetchAbort?.signal });
       if (!r.ok) throw new Error('处理引擎下载失败，请检查网络');
       return r.arrayBuffer();
     }));
@@ -426,7 +426,7 @@ function outputLocation(note) {
   $('grant-output').hidden = !outputFolder || outputPermission === 'granted';
   $('clear-output').hidden = !outputFolder;
   $('save-again').hidden = !lastExport || !outputFolder || lastExport.saved;
-  $('folder-note').textContent = note || (outputFolder && !folderRemembered ? '本次可直接保存；浏览器未能记住该位置，关闭网页后需要重新选择。' : canChooseFolder ? '首次选择后记住，后续导出自动保存；同名文件自动编号。' : '此浏览器仅支持普通下载；记住文件夹请使用电脑上的 Chrome 或 Edge。');
+  $('folder-note').textContent = note || (sharedHosting ? '此免费入口仅在当前页面记住文件夹，连续导出无需重选；刷新或关闭后需重新选择。' : outputFolder && !folderRemembered ? '本次可直接保存；浏览器未能记住该位置，关闭网页后需要重新选择。' : canChooseFolder ? '首次选择后记住，后续导出自动保存；同名文件自动编号。' : '此浏览器仅支持普通下载；记住文件夹请使用电脑上的 Chrome 或 Edge。');
   controls();
 }
 async function restoreOutputLocation() {

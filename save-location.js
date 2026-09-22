@@ -1,6 +1,12 @@
+export const sharedHosting = /(^|\.)githack\.com$/.test(globalThis.location?.hostname || '');
 // Directory handles (not path strings) survive reloads in IndexedDB.
 // Access is still subject to the browser's native permission controls.
 export async function folderSetting(action, handle) {
+  // Shared hosting uses one origin for unrelated repositories; keep directory access in this page only.
+  if (sharedHosting) {
+    if (action === 'set' && handle) throw new Error('此免费入口只在当前页面记住保存文件夹');
+    return;
+  }
   const db = await new Promise((resolve, reject) => {
     const request = indexedDB.open('framecut-preferences', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('settings');
