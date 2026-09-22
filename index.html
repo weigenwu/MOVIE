@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FrameCut · 视频裁剪</title>
+  <meta name="description" content="在浏览器中导入 AVI 和 MP4，自由裁剪画面、截取时间并导出。视频只在你的设备上处理。">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237d6bff'/%3E%3Cpath d='M10 5v17h17M5 10h17v17' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./vendor/ffmpeg.js" defer></script><script src="./app.js" type="module"></script>
+</head>
+<body>
+<header class="topbar"><a class="brand" href="./"><span class="brand-mark">⌗</span> FrameCut <span class="brand-sub">视频裁剪</span></a><div class="local-note"><span class="shield">◇</span> 视频仅在你的设备上处理</div><button class="button primary import-trigger">＋ 导入视频</button></header>
+<main class="workspace">
+  <aside class="library">
+    <div class="panel-heading"><h2>视频素材</h2><span id="file-count" class="count">0</span></div>
+    <button id="drop-zone" class="drop-zone import-trigger"><span class="upload-icon">＋</span><strong>点击或拖入视频</strong><span>AVI / MP4 · 可多选</span></button>
+    <input id="file-input" type="file" accept=".avi,.mp4,video/mp4,video/x-msvideo" multiple hidden>
+    <button id="import-folder" class="button folder-trigger">导入文件夹</button>
+    <input id="folder-input" type="file" webkitdirectory multiple hidden>
+    <small class="folder-note">包含子文件夹 · 仅在本机读取</small>
+    <div id="import-summary" class="import-summary" role="status" hidden></div>
+    <div id="file-list" class="file-list"></div>
+    <div class="library-foot">原文件保持不变。<br>刷新网页后，请重新选择视频。</div>
+  </aside>
+  <section class="editor">
+    <div class="editor-title"><div><span class="eyebrow">剪辑工作台</span><h1 id="active-name">让画面，恰好合适。</h1></div><div class="editor-actions"><span id="source-info" class="meta">AVI & MP4</span><button id="expand-workspace" class="button compact" aria-expanded="false" aria-controls="viewer">展开工作区</button></div></div>
+    <nav id="queue-nav" class="queue-nav" aria-label="逐个查看视频" hidden><button id="previous-file" class="button" disabled>‹ 上一个视频</button><span id="queue-position" aria-live="polite"></span><button id="next-file" class="button" disabled>下一个视频 ›</button></nav>
+    <fieldset id="view-controls" class="view-controls" disabled aria-label="放大查看视频">
+      <span class="view-title">画面放大</span><button id="zoom-out" class="button icon" aria-label="缩小画面">−</button>
+      <input id="zoom" type="range" min="1" max="8" step="0.05" value="1" aria-label="画面放大倍数"><output id="zoom-value" for="zoom">1×</output>
+      <button id="zoom-in" class="button icon" aria-label="放大画面">＋</button><button id="zoom-reset" class="button compact">适应窗口</button>
+      <button id="pan-mode" class="button compact" aria-pressed="false">拖动画面</button>
+    </fieldset>
+    <p class="view-hint">滚轮缩放 · 按住空格拖动，或开启“拖动画面” · 展开工作区可用大窗口选框，按 Esc 收起</p>
+    <div class="viewer" id="viewer">
+      <div id="empty-state" class="empty-state"><span class="empty-frame"><span>▶</span></span><h2>从一个视频开始</h2><p>导入视频，框选需要保留的画面，<br>再选择开始和结束时间。</p><button class="button primary import-trigger">选择 AVI 或 MP4</button><small>建议使用电脑上的 Chrome 或 Edge</small></div>
+      <div id="media-stage" hidden><video id="video" playsinline preload="metadata"></video><img id="frame" alt="当前视频帧" hidden></div><canvas id="crop-canvas" aria-label="裁剪选框：拖动选择区域；按住空格拖动画面；滚轮放大" tabindex="0" hidden></canvas><span id="crop-badge" hidden></span>
+    </div>
+    <div class="player-bar"><button id="play" class="button icon" title="播放或暂停" disabled>▶</button><button id="previous" class="button icon" title="上一帧" aria-label="上一帧" disabled>│‹</button><button id="next" class="button icon" title="下一帧" aria-label="下一帧" disabled>›│</button><span id="clock" class="mono">00:00.000 <span>/ 00:00.000</span></span><span id="preview-label" class="meta">画面选框内的区域会被保留</span></div>
+    <section class="timeline-panel"><div class="timeline-heading"><h2>时间范围</h2><span id="selection-duration" class="accent">尚未选择视频</span></div><div id="timeline-track"><div id="selected-track"></div><input id="seek" type="range" min="0" max="1" value="0" step="0.001" aria-label="视频播放位置" disabled></div><div class="range-row"><label>起点 <input id="start-range" type="range" min="0" max="1" value="0" step="0.001" disabled></label><label>终点 <input id="end-range" type="range" min="0" max="1" value="1" step="0.001" disabled></label></div><div class="timeline-footer"><span>拖动进度条查看画面</span><span>时间精度取决于原视频帧率</span></div></section>
+    <div id="message" role="status" aria-live="polite">准备就绪 · 选择视频即可开始</div>
+    <div id="progress-area" hidden><div class="progress-copy"><span id="progress-text">正在处理…</span><button id="cancel" class="text-button">取消</button></div><progress id="progress" max="100"></progress></div>
+  </section>
+  <aside class="settings"><fieldset id="edit-controls" disabled>
+    <section class="settings-section"><div class="section-heading"><h2><span>01</span> 裁剪画面</h2><button id="reset-crop" class="text-button">重置</button></div><p class="help">在画面上拖动选框，或输入像素。</p><label class="stack">画面比例<select id="aspect"><option value="free">自由比例</option><option value="original">原始比例</option><option value="1">1 : 1</option><option value="1.7777777778">16 : 9</option><option value="0.5625">9 : 16</option><option value="1.3333333333">4 : 3</option></select></label><div class="two-columns crop-inputs"><label>X 坐标<input id="crop-x" type="number" min="0" step="2" value="0"></label><label>Y 坐标<input id="crop-y" type="number" min="0" step="2" value="0"></label><label>宽度<input id="crop-w" type="number" min="2" step="2" placeholder="—"></label><label>高度<input id="crop-h" type="number" min="2" step="2" placeholder="—"></label></div><small>坐标基于原视频，尺寸对齐至偶数像素。</small></section>
+    <section class="settings-section"><div class="section-heading"><h2><span>02</span> 截取时间</h2><button id="reset-time" class="text-button">全片</button></div><div class="two-columns"><label>开始 / 秒<input id="start" type="number" value="0" min="0" step="0.001"></label><label>结束 / 秒<input id="end" type="number" min="0" step="0.001" placeholder="—"></label></div><div class="two-columns"><button id="set-start" class="button compact">当前帧设为起点</button><button id="set-end" class="button compact">当前帧设为终点</button></div></section>
+    <section class="settings-section export-section"><div class="section-heading"><h2><span>03</span> 导出视频</h2></div><label class="stack">导出格式<select id="format"><option value="mp4">MP4 · 通用格式</option><option value="avi">AVI · FFV1 无损编码</option></select></label><label id="quality-label" class="stack">画质<select id="quality"><option value="18">高画质（推荐）</option><option value="23">标准 · 文件更小</option><option value="15">更高画质 · 文件更大</option></select></label><label class="check"><input id="audio" type="checkbox" checked> 保留原声</label><div class="save-location"><span class="save-location-title">保存位置</span><p id="output-folder" role="status">正在恢复上次保存位置…</p><button id="choose-output" class="button compact" disabled>选择保存文件夹</button><button id="grant-output" class="button compact" hidden>允许保存到此文件夹</button><button id="clear-output" class="text-button" hidden>恢复普通下载</button><small id="folder-note">首次选择后记住，后续导出自动保存；同名文件自动编号。</small></div><div class="export-summary"><span>导出尺寸<strong id="output-size">—</strong></span><span>导出时长<strong id="output-duration">—</strong></span></div><button id="export" class="button primary export-button">导出视频 <span>↗</span></button><p id="export-note" class="help">按原视频帧率导出，画面不拉伸。</p></section>
+  </fieldset><div id="result" hidden><strong id="result-title">导出完成</strong><p id="result-info"></p><button id="save-again" class="button success" hidden>保存到所选文件夹</button><a id="download" class="button success" download>保存视频</a><small id="result-note">若没有自动下载，请点击保存。</small></div></aside>
+</main><footer>FRAMECUT <span>自由选框 · 精确截取 · 本地处理</span><button class="text-button" id="help-button">使用说明</button></footer>
+<dialog id="help"><h2>使用说明</h2><p>在“保存位置”中选择一次文件夹，后续导出会直接保存到那里；同名文件自动加编号，保留已有文件。当前电脑的这个浏览器会记住该文件夹，刷新或重开后无需重新选路径；如果浏览器要求确认，请允许访问。清除网站数据或使用另一台电脑后需重新选择。普通下载无法由网页记住保存路径。</p><p>画面上方的 ＋ / −、滑块或鼠标滚轮可放大至 8 倍。开启“拖动画面”或按住空格拖动来寻找视野，关闭后继续框选。“适应窗口”恢复完整画面。放大仅用于查看，导出尺寸由裁剪框决定。</p><ol><li>导入一个或多个 AVI / MP4，点击左侧文件切换。</li><li>拖动选框内部移动；拖动边角调整大小；从选框外拖动可重新框选。也可以直接输入坐标和尺寸。</li><li>拖动时间滑块或输入秒数，确定开始与结束时间。</li><li>选择格式并导出，完成后点击“保存视频”。</li></ol><p>未压缩、无声的 RGB AVI 可直接播放，无需等待生成预览。磁盘较慢时预览可能跳帧，导出保留原视频帧率。其他 AVI 或浏览器不能直接播放的视频，仍可逐帧查看；点击播放需先生成选定时间段的预览。最终导出始终使用原视频。</p><p>较大的视频建议用电脑处理。当前浏览器引擎限制单个输入文件小于 2 GiB；无损导出也可能受到可用内存限制。处理时请保持页面打开。首次使用需加载约 31 MB 的处理引擎。</p><p>MP4 会重新压缩；AVI 使用 FFV1 无损编码，文件可能较大，建议使用 VLC 播放。网页不上传视频。原始数据请自行保留。</p><button class="button primary" id="close-help">知道了</button></dialog>
+</body></html>
