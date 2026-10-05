@@ -2,7 +2,7 @@
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/9b937d7b6e04df2d1c143266d5e5b9310df3e174
+Source: https://github.com/weigenwu/MOVIE/tree/bc002c0b2db2f56d83a46e42a65f90d2fbd3778e
 
 This branch has no GitHub Actions workflow. It can be served by any HTTPS static host, or through raw.githack.com using an immutable commit URL.
 
@@ -13,3 +13,5 @@ CDN adaptations: the two WebAssembly segments use `.wasm` names so raw.githack.c
 Run `node verify-release.mjs` to check release engine integrity and shared-origin directory handling.
 
 2026-09-23: All four crop corners now have larger handles and zoom-independent hit targets, including the portion outside video edges. Hover shows the resize direction. Run `node test-crop-handles.mjs` for the edge/zoom regression check. Browser checks covered all four corners at 1x and 3x, 1:1 aspect lock, and MP4 export.
+
+2026-10-05: Simplified labels and spacing, moved repeated instructions into Help, and retained actionable errors and folder-saving status. Browser validation covered a synthetic 320x320 AVI, zoom, crop/time settings, and a 240x240 one-second MP4 export. Existing crop-handle and release-integrity checks pass.
