@@ -31,7 +31,7 @@ function controls() {
   document.querySelectorAll('.import-trigger,.folder-trigger,.file-item').forEach(el => el.disabled = busy);
   const index = files.indexOf(active);
   $('queue-nav').hidden = !files.length;
-  $('queue-position').textContent = index < 0 ? `共 ${files.length} 个` : `第 ${index + 1} / ${files.length} 个`;
+  $('queue-position').textContent = index < 0 ? `共 ${files.length} 个` : `${index + 1} / ${files.length}`;
   $('previous-file').disabled = busy || index <= 0;
   $('next-file').disabled = busy || index < 0 || index >= files.length - 1;
   $('progress-area').hidden = !busy;
@@ -42,7 +42,7 @@ async function task(label, fn) {
   busy = true; cancelled = false; fetchAbort = new AbortController(); stopPlayback(); controls(); progress(label);
   try { await fn(); return true; }
   catch (err) {
-    if (cancelled) status('已取消，可以调整后重新操作。');
+    if (cancelled) status('已取消');
     else { console.error(err); status(`处理失败：${String(err?.message || err).slice(0, 220)}。可重试，或缩短时间、减小画面后再导出。`, true); }
     if (engine && !cancelled) { engine.terminate(); engine = null; mounted = null; }
     return false;
@@ -52,7 +52,7 @@ function checkCancelled() { if (cancelled) throw new Error('操作已取消'); }
 $('cancel').onclick = () => { if(savingFile)return; cancelled = true; fetchAbort?.abort(); engine?.terminate(); engine = null; mounted = null; };
 async function getEngine() {
   if (engine?.loaded) return engine;
-  progress('首次使用：加载视频处理引擎（约 31 MB）');
+  progress('加载处理引擎（31 MB）…');
   if (!wasmURL) {
     const parts = await Promise.all([1,2].map(async n => {
       const r = await fetch(new URL(`./vendor/core-${n}.bin`, import.meta.url), { signal: fetchAbort?.signal });
@@ -205,11 +205,11 @@ async function selectFile(item) {
       try { await frameAt(item.current); }
       catch (error) { if (!item.raw) throw error; item.raw = null; await frameAt(item.current); }
     }
-    status(item.raw ? '可以直接播放，无需等待生成预览。拖动进度条或逐帧查看后即可裁剪导出。' : item.native ? '拖动选框调整画面，设置时间后即可导出。' : '已开启按帧预览。拖动进度条查看；点击播放可生成所选片段的播放预览。');
+    status('');
     renderFiles();
   });
 }
-function showVideo() { video.hidden = false; $('frame').hidden = true; $('preview-label').textContent = active.native ? '原视频预览' : '播放预览 · 导出使用原视频'; }
+function showVideo() { video.hidden = false; $('frame').hidden = true; $('preview-label').textContent = active.native ? '' : '片段预览'; }
 async function frameAt(seconds) {
   if (active.raw) { await rawFrameAt(active, seconds, previewEpoch); return; }
   const path = await mount(active);
@@ -223,7 +223,7 @@ async function frameAt(seconds) {
   if (active.frameURL) URL.revokeObjectURL(active.frameURL);
   active.frameURL = URL.createObjectURL(new Blob([bytes], { type:'image/png' }));
   $('frame').src = active.frameURL; await $('frame').decode();
-  video.hidden = true; $('frame').hidden = false; $('preview-label').textContent = '按帧预览 · 点击播放生成片段预览';
+  video.hidden = true; $('frame').hidden = false; $('preview-label').textContent = '逐帧预览';
 }
 function stopPlayback() {
   previewEpoch++; clearTimeout(previewTimer); previewTimer = null;
@@ -242,7 +242,7 @@ async function rawFrameAt(item, seconds, epoch) {
     if (previousURL) URL.revokeObjectURL(previousURL);
   } else $('frame').src = item.frameURL;
   video.hidden = true; $('frame').hidden = false; $('frame').dataset.index = index;
-  $('preview-label').textContent = '直接播放 · 无需生成预览';
+  $('preview-label').textContent = '';
 }
 function playRaw() {
   const item = active, epoch = ++previewEpoch, start = item.current, started = performance.now();
@@ -278,7 +278,7 @@ function sync() {
 function expandWorkspace(expanded) {
   document.querySelector('.workspace').classList.toggle('expanded', expanded);
   $('expand-workspace').setAttribute('aria-expanded', String(expanded));
-  $('expand-workspace').textContent = expanded ? '收起工作区' : '展开工作区';
+  $('expand-workspace').textContent = expanded ? '收起' : '展开';
   dragging = null;
   document.querySelector('.editor').scrollIntoView({ block:'start' });
 }
@@ -429,11 +429,11 @@ $('play').onclick=async()=>{
   }
   if(!active.native && !(active.proxy&&active.proxy.start<=active.start&&active.proxy.end>=active.end)){
     const ok=await task('正在生成选定片段的播放预览…',async()=>{
-      const path=await mount(active);processingDuration=active.end-active.start;progress('正在生成播放预览，完成后自动播放…',0);
+      const path=await mount(active);processingDuration=active.end-active.start;progress('生成播放预览…',0);
       await exec(['-ss',String(active.start),'-i',path,'-t',String(processingDuration),'-map','0:v:0','-map','0:a:0?','-c:a','aac','-vf',`scale='min(720,iw)':-2,setsar=1,fps=${Math.min(15,active.meta.fps)}`,'-c:v','libx264','-preset','ultrafast','-crf','28','-pix_fmt','yuv420p','-threads','1','-movflags','+faststart','/preview.mp4']);
       const data=await engine.readFile('/preview.mp4');await removeTemp('/preview.mp4');if(active.proxy)URL.revokeObjectURL(active.proxy.url);
       active.proxy={start:active.start,end:active.end,url:URL.createObjectURL(new Blob([data],{type:'video/mp4'}))};
-      if(!await nativeVideo(active.proxy.url))throw new Error('播放预览无法打开');status('播放预览已生成；最终导出使用原视频的完整分辨率和帧率。');
+      if(!await nativeVideo(active.proxy.url))throw new Error('播放预览无法打开');status('');
     });if(!ok)return;
   }
   if(!active.native&&video.src!==active.proxy.url)await nativeVideo(active.proxy.url);
@@ -443,14 +443,14 @@ $('play').onclick=async()=>{
 };
 video.ontimeupdate=()=>{if(!active?.meta||video.hidden||busy||!previewPlaying)return;active.current=clamp(video.currentTime+clipOffset,0,active.meta.duration);if(active.current>=active.end){video.pause();active.current=active.end;}sync();};
 video.onplay=()=>{if(!video.hidden)$('play').textContent='Ⅱ';};video.onpause=video.onended=()=>{if(active?.raw&&video.hidden)return;$('play').textContent='▶';previewPlaying=false;};
-$('format').onchange=()=>{$('quality-label').hidden=$('format').value==='avi';$('export-note').textContent=$('format').value==='avi'?'FFV1 无损编码，文件较大；建议用 VLC 播放。':'按原视频帧率导出，画面不拉伸。';};
+$('format').onchange=()=>{$('quality-label').hidden=$('format').value==='avi';$('export-note').textContent=$('format').value==='avi'?'无损文件较大，建议用 VLC 播放。':'';};
 function outputLocation(note) {
-  $('output-folder').textContent = outputFolder ? `${folderRemembered ? '已记住' : '本次保存'}：${outputFolder.name}${outputPermission === 'granted' ? ' · 自动保存' : ' · 待允许访问'}` : '普通下载（由浏览器决定位置）';
-  $('choose-output').textContent = outputFolder ? '更换保存文件夹' : '选择保存文件夹';
+  $('output-folder').textContent = outputFolder ? `${folderRemembered ? '已记住' : '本次保存'}：${outputFolder.name}${outputPermission === 'granted' ? ' · 自动保存' : ' · 待允许访问'}` : '浏览器下载';
+  $('choose-output').textContent = outputFolder ? '更换文件夹' : '选择文件夹';
   $('grant-output').hidden = !outputFolder || outputPermission === 'granted';
   $('clear-output').hidden = !outputFolder;
   $('save-again').hidden = !lastExport || !outputFolder || lastExport.saved;
-  $('folder-note').textContent = note || (outputFolder && !folderRemembered ? '本次可直接保存；浏览器未能记住该位置，关闭网页后需要重新选择。' : canChooseFolder ? '首次选择后记住，后续导出自动保存；同名文件自动编号。' : '此浏览器仅支持普通下载；记住文件夹请使用电脑上的 Chrome 或 Edge。');
+  $('folder-note').textContent = note || (outputFolder && !folderRemembered ? '仅本次记住，重开后重选。' : canChooseFolder ? '自动记住文件夹；同名文件编号。' : '文件夹保存需使用 Chrome / Edge。');
   controls();
 }
 async function restoreOutputLocation() {
@@ -490,7 +490,7 @@ async function ensureOutputAccess() {
 $('grant-output').onclick = async () => {
   if (busy || locationBusy) return;
   locationBusy = true; controls();
-  try { if (await ensureOutputAccess()) status('已允许访问保存文件夹，后续导出会直接保存。'); }
+  try { if (await ensureOutputAccess()) status('已允许保存'); }
   finally { locationBusy = false; controls(); }
 };
 $('clear-output').onclick = async () => {
@@ -507,14 +507,14 @@ async function saveCompletedExport() {
     lastExport.saved = true;
     $('result-title').textContent = '已保存到文件夹';
     $('result-info').textContent = `${outputFolder.name} / ${savedName} · ${humanSize(lastExport.blob.size)}`;
-    $('result-note').textContent = '已自动保存。同名文件自动编号，不覆盖已有文件。';
-    $('download').textContent = '另存一份（普通下载）';
+    $('result-note').textContent = '同名文件自动编号。';
+    $('download').textContent = '另存一份';
     status(`已保存到「${outputFolder.name}」：${savedName}`);
   } catch {
     // Keep the encoded Blob even if createWritable, write, or close fails.
     lastExport.saved = false;
     $('result-title').textContent = '已生成，尚未保存';
-    $('result-note').textContent = '可重试保存或更换文件夹，无需重新处理视频；也可点击普通下载。';
+    $('result-note').textContent = '请重试保存或普通下载。';
     $('download').textContent = '普通下载';
     try { outputPermission = await outputFolder.queryPermission({ mode:'readwrite' }); } catch { outputPermission = 'prompt'; }
     status('文件夹写入失败。请检查权限或剩余磁盘空间；视频已保留，可重试保存或普通下载。', true);
@@ -547,9 +547,9 @@ async function exportVideo(){
       lastExport={blob,name,saved:false};
       if(resultURL)URL.revokeObjectURL(resultURL);resultURL=URL.createObjectURL(blob);
       $('download').href=resultURL;$('download').download=name;$('result-info').textContent=`${name} · ${humanSize(data.length)}`;$('result').hidden=false;
-      $('result-title').textContent='导出完成';$('download').textContent='保存视频';$('result-note').textContent='若没有自动下载，请点击保存。';outputLocation();
+      $('result-title').textContent='导出完成';$('download').textContent='下载视频';$('result-note').textContent='';outputLocation();
       if(outputFolder)await saveCompletedExport();
-      else{status(`导出完成：${c.w} × ${c.h}，${duration.toFixed(3)} 秒。原视频未修改。`);$('download').click();}
+      else{status('');$('download').click();}
     }finally{await removeTemp(out);}
   });
 }
