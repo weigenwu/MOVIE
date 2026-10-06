@@ -2,7 +2,7 @@
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/2ebdbc7d5e55a32ed783007495aa8c432d0305cd
+Source: https://github.com/weigenwu/MOVIE/tree/47a4da967fa7ff50debbc1a511f817bdaf4949ce
 
 This branch has no GitHub Actions workflow. It can be served by any HTTPS static host, or through raw.githack.com using an immutable commit URL.
 
@@ -16,4 +16,4 @@ Run `node verify-release.mjs` to check release engine integrity and shared-origi
 
 2026-10-05: Simplified labels and spacing, moved repeated instructions into Help, and retained actionable errors and folder-saving status. Browser validation covered a synthetic 320x320 AVI, zoom, crop/time settings, and a 240x240 one-second MP4 export. Existing crop-handle and release-integrity checks pass.
 
-2026-10-06: New videos start in draw-selection mode. The Frame selection button (框选) lets users draw a new crop anywhere, then returns to move/resize mode. Square crops expose one pixel side-length input; rectangles retain independent width/height fields. Browser checks covered click-without-drag, forward/reverse drawing within an existing crop, movement, 3x zoom, 1:1 locking, size limits, corner resizing, pan/Escape mode switching, and a 160x160 MP4 export from a synthetic AVI. No source video or test output is included in this release.
+2026-10-06: Dragging the video now always starts a new selection by default, including inside an existing crop; no selection-mode button is required. Handles still resize the crop, and the optional Move selection button (移动选框) enables dragging the existing region without resizing. Escape returns to direct selection. Square crops expose a pixel side-length input; rectangles retain width/height fields. Browser checks covered consecutive forward/reverse selections with no toolbar clicks, click-without-drag, corner resizing, explicit movement, Escape, square side length, and a 160x160 MP4 export from a synthetic AVI. No source video or test output is included in this release.
