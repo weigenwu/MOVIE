@@ -6,7 +6,7 @@ const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
 let previewEpoch = 0, previewTimer = null;
-let panMode = false, spacePan = false;
+let panMode = false, spacePan = false, drawMode = false;
 let logLines = [], resultURL = null;
 let outputFolder = null, outputPermission = 'prompt', locationReady = false, locationBusy = false, savingFile = false, lastExport = null;
 let folderRemembered = true;
@@ -185,6 +185,7 @@ async function selectFile(item) {
     $('active-name').title = item.path;
     $('source-info').textContent = '正在读取视频…';
     if (!item.meta) await probe(item);
+    setDrawMode(item.crop.x === 0 && item.crop.y === 0 && item.crop.w === even(item.meta.width) && item.crop.h === even(item.meta.height));
     $('viewer').style.setProperty('--video-ratio', item.meta.width / item.meta.height);
     item.view ||= { zoom:1, x:0, y:0 };
     if (item.ext === 'avi' && item.raw === undefined) item.raw = await openRawAVI(item.file, item.meta);
@@ -266,6 +267,11 @@ function sync() {
   if (!active?.meta) return;
   const { meta, crop, start, end, current } = active;
   for (const key of ['x','y','w','h']) $('crop-' + key).value = crop[key];
+  const square = active.aspect === '1';
+  $('square-size').hidden = !square;
+  $('crop-w').parentElement.hidden = $('crop-h').parentElement.hidden = square;
+  $('crop-side').value = crop.w;
+  $('crop-side').max = even(Math.min(meta.width, meta.height));
   $('start').value = Number(start.toFixed(3)); $('end').value = Number(end.toFixed(3));
   for (const id of ['seek','start-range','end-range','start','end']) $(id).max = meta.duration;
   $('seek').value = current; $('start-range').value = start; $('end-range').value = end;
@@ -284,6 +290,10 @@ function expandWorkspace(expanded) {
 }
 $('expand-workspace').onclick = () => expandWorkspace($('expand-workspace').getAttribute('aria-expanded') !== 'true');
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && drawMode && !document.querySelector('dialog[open]')) {
+    if (dragging?.mode === 'new') { active.crop = dragging.crop; dragging = null; sync(); }
+    setDrawMode(false); return;
+  }
   if (e.key === 'Escape' && $('expand-workspace').getAttribute('aria-expanded') === 'true' && !document.querySelector('dialog[open]')) {
     expandWorkspace(false); $('expand-workspace').focus();
   }
@@ -314,16 +324,23 @@ function zoomTo(value, clientX, clientY) {
   view.zoom = next; dragging = null; resize();
 }
 function updatePanMode() {
-  canvas.style.cursor = '';
+  canvas.style.cursor = drawMode && !panMode && !spacePan ? 'crosshair' : '';
+  $('draw-mode').setAttribute('aria-pressed', String(drawMode));
   $('pan-mode').setAttribute('aria-pressed', String(panMode));
   canvas.classList.toggle('pan-ready', panMode || spacePan);
   canvas.classList.toggle('panning', dragging?.mode === 'pan');
 }
+function setDrawMode(enabled) {
+  drawMode = enabled;
+  if (enabled) panMode = false;
+  updatePanMode();
+}
+$('draw-mode').onclick = () => { stopPlayback(); dragging = null; setDrawMode(!drawMode); };
 $('zoom').oninput = () => zoomTo(Number($('zoom').value));
 $('zoom-in').onclick = () => zoomTo(active.view.zoom * 1.25);
 $('zoom-out').onclick = () => zoomTo(active.view.zoom / 1.25);
 $('zoom-reset').onclick = () => { active.view = { zoom:1, x:0, y:0 }; dragging = null; resize(); };
-$('pan-mode').onclick = () => { panMode = !panMode; updatePanMode(); };
+$('pan-mode').onclick = () => { panMode = !panMode; if (panMode) drawMode = false; updatePanMode(); };
 $('viewer').addEventListener('wheel', e => {
   if (busy || !active?.view || e.ctrlKey || e.metaKey) return;
   e.preventDefault(); zoomTo(active.view.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
@@ -372,15 +389,16 @@ canvas.onpointerdown=e=>{
   if(panMode||spacePan||e.button===1){dragging={mode:'pan',startX:e.clientX,startY:e.clientY,x:active.view.x,y:active.view.y};canvas.setPointerCapture(e.pointerId);e.preventDefault();updatePanMode();return;}
   const rect=$('media-stage').getBoundingClientRect();
   const p=position(e),c=active.crop;
-  const handle=cropHandleAt(c,active.meta,rect,e.clientX,e.clientY);
+  const handle=drawMode?-1:cropHandleAt(c,active.meta,rect,e.clientX,e.clientY);
   if(handle<0&&(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom))return;
   const inside=p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
-  dragging={start:p,crop:{...c},handle,mode:handle>=0?'resize':inside?'move':'new'};canvas.setPointerCapture(e.pointerId);e.preventDefault();
+  dragging={start:p,crop:{...c},handle,mode:drawMode?'new':handle>=0?'resize':inside?'move':'new'};canvas.setPointerCapture(e.pointerId);e.preventDefault();
 };
 canvas.onpointermove=e=>{
   if(busy||!active?.meta)return;
   if(!dragging){
     if(panMode||spacePan){canvas.style.cursor='';return;}
+    if(drawMode){canvas.style.cursor='crosshair';return;}
     const rect=$('media-stage').getBoundingClientRect(),c=active.crop;
     const handle=cropHandleAt(c,active.meta,rect,e.clientX,e.clientY),p=position(e);
     const inside=e.clientX>=rect.left&&e.clientX<=rect.right&&e.clientY>=rect.top&&e.clientY<=rect.bottom&&p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
@@ -391,21 +409,32 @@ canvas.onpointermove=e=>{
   const p=position(e),d=dragging,c=d.crop,m=active.meta;
   if(d.mode==='move'){active.crop=normalizedCrop({...c,x:c.x+p.x-d.start.x,y:c.y+p.y-d.start.y});sync();return;}
   let left=c.x,right=c.x+c.w,top=c.y,bottom=c.y+c.h;
-  if(d.mode==='new'){left=d.start.x;right=p.x;top=d.start.y;bottom=p.y;}
+  if(d.mode==='new'){
+    const rect=$('media-stage').getBoundingClientRect();
+    // A click or tiny jitter must not replace the existing crop.
+    if(Math.abs(p.x-d.start.x)*rect.width/m.width<4||Math.abs(p.y-d.start.y)*rect.height/m.height<4)return;
+    d.changed=true;left=d.start.x;right=p.x;top=d.start.y;bottom=p.y;
+  }
   else{if([0,6,7].includes(d.handle))left=p.x;if([2,3,4].includes(d.handle))right=p.x;if([0,1,2].includes(d.handle))top=p.y;if([4,5,6].includes(d.handle))bottom=p.y;}
   let x=Math.min(left,right),y=Math.min(top,bottom),w=Math.abs(right-left),h=Math.abs(bottom-top);const ratio=aspectRatio();
   if(ratio){if(w/h>ratio)w=h*ratio;else h=w/ratio;if(d.mode==='resize'){if([0,6,7].includes(d.handle))x=c.x+c.w-w;if([0,1,2].includes(d.handle))y=c.y+c.h-h;}else{if(p.x<d.start.x)x=d.start.x-w;if(p.y<d.start.y)y=d.start.y-h;}}
   active.crop=normalizedCrop({x,y,w:Math.min(w,m.width-x),h:Math.min(h,m.height-y)});sync();
 };
-canvas.onpointerup=canvas.onpointercancel=canvas.onlostpointercapture=()=>{dragging=null;updatePanMode();};
-canvas.onpointerleave=()=>{if(!dragging)canvas.style.cursor='';};
+canvas.onpointerup=()=>{const drawn=dragging?.mode==='new'&&dragging.changed;dragging=null;if(drawn)setDrawMode(false);else updatePanMode();};
+canvas.onpointercancel=canvas.onlostpointercapture=()=>{if(dragging?.mode==='new'){active.crop=dragging.crop;sync();}dragging=null;updatePanMode();};
+canvas.onpointerleave=()=>{if(!dragging)updatePanMode();};
 canvas.onkeydown=e=>{if(!active?.meta||busy)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active.crop=normalizedCrop({...active.crop,x:active.crop.x+x,y:active.crop.y+y});sync();}};
 for(const key of ['x','y','w','h'])$('crop-'+key).onchange=()=>{
   const value=Number($('crop-'+key).value);if(!Number.isFinite(value)){sync();return;}
-  const c={...active.crop,[key]:value},ratio=aspectRatio();if(ratio&&key==='w')c.h=c.w/ratio;if(ratio&&key==='h')c.w=c.h*ratio;active.crop=normalizedCrop(c);sync();
+  const c={...active.crop,[key]:value},ratio=aspectRatio();if(ratio&&key==='w')c.h=c.w/ratio;if(ratio&&key==='h')c.w=c.h*ratio;active.crop=normalizedCrop(c);setDrawMode(false);sync();
+};
+$('crop-side').onchange=()=>{
+  const value=Number($('crop-side').value);if(!Number.isFinite(value)){sync();return;}
+  const side=clamp(even(value),2,even(Math.min(active.meta.width,active.meta.height)));
+  active.crop=normalizedCrop({...active.crop,w:side,h:side});setDrawMode(false);sync();
 };
 $('aspect').onchange=()=>{active.aspect=$('aspect').value;const ratio=aspectRatio();if(ratio){let w=active.crop.w,h=w/ratio;if(h>active.meta.height){h=active.meta.height;w=h*ratio;}active.crop=normalizedCrop({...active.crop,w,h});}sync();};
-$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};sync();};
+$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};setDrawMode(true);sync();};
 function setTime(which,value){
   if(!Number.isFinite(value)){sync();return;}const gap=Math.min(1/active.meta.fps,active.meta.duration);
   if(which==='start')active.start=clamp(value,0,active.end-gap);else active.end=clamp(value,active.start+gap,active.meta.duration);stopPlayback();sync();
