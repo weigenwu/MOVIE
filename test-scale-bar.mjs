@@ -59,9 +59,22 @@ assert.throws(() => calibrationFromReference(Number.MAX_VALUE, Number.MIN_VALUE)
 assert.throws(() => scaleBarLayout(crop, { ...settings, unitsPerPixel: Number.MIN_VALUE }), /范围/);
 // Verify canvas drawing uses exact geometry and never rescales the calibrated bar.
 const calls = [];
-const ctx = Object.fromEntries(['save', 'clearRect', 'fillRect', 'fillText', 'restore'].map(name => [name, (...args) => calls.push([name, ...args])]));
+const ctx = Object.fromEntries(['save', 'clearRect', 'fillRect', 'fillText', 'strokeText', 'restore'].map(name => [name, (...args) => calls.push([name, ...args])]));
 drawScaleBar(ctx, initial);
 assert.deepEqual(calls.at(-2), ['fillRect', initial.barX, initial.barY, 100, initial.barHeight]);
 assert(calls.some(call => call[0] === 'fillText' && call[1] === '50 µm'));
 assert.equal(ctx.textAlign, 'center');
-console.log('Scale bar calibration, four corners, exact pixel length, invalid values, small crops and canvas geometry passed.');
+assert.deepEqual(calls.filter(call => call[0] === 'fillRect')[0], ['fillRect', 0, 0, initial.width, initial.height]);
+assert.equal(calls.filter(call => call[0] === 'strokeText').length, 0);
+calls.length = 0;
+drawScaleBar(ctx, initial, { transparent: true });
+assert.deepEqual(calls.filter(call => call[0] === 'fillRect'), [['fillRect', initial.barX, initial.barY, 100, initial.barHeight]]);
+assert.deepEqual(calls.filter(call => call[0] === 'strokeText'), [['strokeText', initial.label, initial.textX, initial.textY]]);
+assert(calls.findIndex(call => call[0] === 'strokeText') < calls.findIndex(call => call[0] === 'fillText'));
+assert.deepEqual(calls[0], ['save']);
+assert.deepEqual(calls.at(-1), ['restore']);
+assert.equal(ctx.shadowOffsetX, 0);
+assert.equal(ctx.shadowOffsetY, 0);
+assert.equal(ctx.shadowBlur, 0);
+assert.equal(ctx.lineWidth, 1);
+console.log('Scale bar calibration, four corners, exact pixel length, invalid values, small crops, legacy background and transparent rendering passed.');

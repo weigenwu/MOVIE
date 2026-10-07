@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm';
 // itself is covered separately by the actual WASM/export-pixel regression tests.
 const source = readFileSync(new URL('./src/app.js', import.meta.url), 'utf8');
 const loadModule = file => import(`data:text/javascript;base64,${Buffer.from(readFileSync(new URL(file, import.meta.url), 'utf8')).toString('base64')}`);
-const { timeOverlayLayout, timeRegionError, videoFilterArgs } = await loadModule('./src/time-overlay.js');
+const { timeOverlayLayout, timeRegionError, originalTimeVisible, applyTimeMatte, videoFilterArgs } = await loadModule('./src/time-overlay.js');
 const { scaleBarLayout, drawScaleBar } = await loadModule('./src/scale-bar.js');
 function section(start, end) {
   const from = source.indexOf(start), to = source.indexOf(end, from + start.length);
@@ -17,17 +17,18 @@ const realHandlers = [
   section('async function probe(item)', 'function renderFiles()'),
   section('async function selectFile(item)', 'function showVideo()'),
   section('function annotationError()', 'function syncTimeOverlay()'),
-  section('async function detectOriginalTime(', "$('time-position').onchange"),
+  section('function syncTimeOverlay()', 'function scalePatch()'),
+  section('async function detectOriginalTime(', "$('frame').addEventListener"),
   section('function scalePatch()', 'function drawTimePreview()'),
   section('function drawTimePreview()', 'async function detectOriginalTime('),
   section('async function exportVideo()', "$('export').onclick=exportVideo;")
 ].join('\n');
 const json = value => JSON.parse(JSON.stringify(value));
 function harness() {
-  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, detections:[], detected:null, decodes:0 };
+  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, detections:[], detected:null, decodes:0, mattes:[], fills:[] };
   const drawCalls=[];
-  const paintFor = owner => ({...Object.fromEntries(['save','restore','clearRect','fillRect','fillText','drawImage'].map(name => [name,(...args)=>drawCalls.push([name,...args,owner])])),
-    getImageData(_x,_y,width,height){return {width,height,data:new Uint8ClampedArray(width*height*4)};}});
+  const paintFor = owner => ({...Object.fromEntries(['save','restore','clearRect','fillRect','fillText','strokeText','drawImage','putImageData'].map(name => [name,function(...args){drawCalls.push([name,...args,owner]);if(name==='fillText'||name==='fillRect')calls.fills.push({name,args,style:this.fillStyle});}])),
+    getImageData(_x,_y,width,height){const data=new Uint8ClampedArray(width*height*4);data.set([0,0,0,255,200,200,200,255,56,56,56,255,8,8,8,255].slice(0,data.length));return {width,height,data};}});
   const $ = id => {
     if (!elements.has(id)) elements.set(id, {
       value: id === 'format' ? 'avi' : id === 'quality' ? '18' : '',
@@ -45,7 +46,8 @@ function harness() {
   const context = {
     $, active:null, busy:false, locationBusy:false, locationReady:true, video:{pause(){},hidden:false,src:'',currentSrc:'',videoWidth:640,videoHeight:480,readyState:3},canvas:{hidden:false},
     resultURL:null, outputFolder:null, dragging:null, spacePan:false, panMode:false, moveMode:false,
-    calibrationMode:false, previewEpoch:0, timeOverlayLayout, timeRegionError, videoFilterArgs,
+    calibrationMode:false, previewEpoch:0, timeOverlayLayout, timeRegionError, originalTimeVisible, videoFilterArgs,
+    applyTimeMatte(imageData,options){const result=applyTimeMatte(imageData,options);calls.mattes.push({options:json(options),pixels:Array.from(result.data.slice(0,16))});return result;},
     scaleBarLayout, drawScaleBar, Blob,
     URL:{createObjectURL:()=> 'blob:test-result',revokeObjectURL(){}},
     document:{ createElement(type) {
@@ -67,8 +69,8 @@ function harness() {
     frameAt:async()=>{context.active.frameURL=`blob:frame-${context.active.id}`;$('frame').src=context.active.frameURL;context.video.hidden=true;},showVideo(){context.video.hidden=false;},
     detectTimeRegion:(image,meta)=>{calls.detections.push({image,meta});return calls.detectFn ? calls.detectFn(image,meta) : calls.detected;},
     stopPlayback(){},cancelSelection(){context.dragging=null;},
-    checkCancelled(){},updatePanMode(){},renderFiles(){},resize(){},sync(){},progress(){},outputLocation(){},
-    even:n=>Math.floor(n/2)*2,humanSize:()=> 'test size'
+    checkCancelled(){},updatePanMode(){},renderFiles(){},resize(){},sync(){if(context.active?.meta)context.syncTimeOverlay();},progress(){},outputLocation(){},
+    even:n=>Math.floor(n/2)*2,clamp:(n,min,max)=>Math.min(max,Math.max(min,n)),humanSize:()=> 'test size'
   };
   runInNewContext(realHandlers,context);
   const makeFile = (ext='avi',name=`source.${ext}`) => ({id:name,ext,path:name,file:{name},native:ext==='mp4'});
@@ -85,6 +87,10 @@ function harness() {
   const h=harness(),item=await h.choose();
   assert.equal(item.timeOverlay.enabled,true);
   assert.equal(item.timeOverlay.position,'top-right','Original time defaults to the requested upper corner');
+  assert.equal(item.timeOverlay.widthPercent,40,'Relocated time defaults to 40 percent of the output width');
+  assert.equal(item.timeOverlay.color,'red','Original timestamp glyphs default to the requested red');
+  assert.equal(item.transparentAnnotations,true,'Original time and scale default to transparent backgrounds');
+  assert.equal(h.$('transparent-annotations').checked,true);
   assert.equal(item.scaleBar.position,'bottom-right','Scientific scale defaults to the requested bottom-right corner');
   assert.equal(item.timeRegion,null);
   await h.context.exportVideo();
@@ -144,7 +150,9 @@ for(const ext of ['avi','mp4']){
   h.drawCalls.length=0;h.context.drawTimePreview();
   const copies=h.drawCalls.filter(call=>call[0]==='drawImage'&&call.at(-1)==='time-preview');
   assert.equal(copies.length,2,'Preview draws the cropped field and one original timestamp strip');
-  assert.deepEqual(copies[1].slice(2,6),[440,8,192,28]);
+  assert.equal(copies[1].length,7,'Transparent preview overlays a prepared stamp canvas');
+  assert(h.drawCalls.some(call=>call[0]==='drawImage'&&call[1]===sourceImage&&call.at(-1)==='scratch'&&json(call.slice(2,6)).join(',')==='440,8,192,28'),'Matte must be derived from original source pixels');
+  assert(h.drawCalls.some(call=>call[0]==='putImageData'),'Preview applies the time alpha matte');
   assert(!h.drawCalls.some(call=>call[0]==='fillText'),'Original timestamp must not be regenerated from playback time');
 }
 
@@ -226,12 +234,122 @@ for (const input of ['avi','mp4']) for (const format of ['avi','mp4']) {
   assert.equal(args[args.indexOf('-i')+1],`/input/source.${input}`);
   assert.match(graph,/split=2\[scene\]\[clock\]/);
   assert.match(graph,/crop=192:28:440:8:exact=1/);
-  assert.match(graph,/overlay=124:4/);
+  const placement=timeOverlayLayout(item.crop,item.timeRegion,item.timeOverlay.position,item.timeOverlay.widthPercent);
+  assert.equal(placement.w,128,'Default source strip scales to 40 percent of a 320 pixel crop');
+  assert(graph.includes(`scale=${placement.w}:${placement.h}:flags=lanczos`));
+  assert(graph.includes(`overlay=${placement.x}:${placement.y}`));
   assert.equal(args[args.indexOf('-map')+1],'[withtime]');
   assert.equal(args[args.indexOf('-c:v')+1],format==='avi'?'ffv1':'libx264');
   assert.match(h.$('download').download,new RegExp(`_time\\.${format}$`));
   assert.match(h.$('result-note').textContent,/原时间：自动保留/);
   assert.equal(h.calls.downloads,1);
+}
+
+// Sizing is a per-file presentation setting. It updates the actual preview and
+// export together while preserving the scientific crop, source strip and scale.
+{
+  const h=harness(),item=await h.choose();item.timeRegion={x:440,y:8,w:192,h:28};
+  Object.assign(item.scaleBar,{enabled:true,unitsPerPixel:.5,length:50});
+  const scientific=json({crop:item.crop,timeRegion:item.timeRegion,scaleBar:item.scaleBar,start:item.start,end:item.end});
+  h.$('time-size').value='60';h.$('time-size').oninput();
+  assert.equal(item.timeOverlay.widthPercent,60);
+  assert.equal(Number(h.$('time-size-value').value),60);
+  h.$('time-size-value').value='85';h.$('time-size-value').onchange();
+  assert.equal(item.timeOverlay.widthPercent,85);
+  assert.equal(Number(h.$('time-size').value),85);
+  assert.deepEqual(json({crop:item.crop,timeRegion:item.timeRegion,scaleBar:item.scaleBar,start:item.start,end:item.end}),scientific);
+  const p=timeOverlayLayout(item.crop,item.timeRegion,'top-right',85);
+  assert.equal(p.w,272);assert.equal(p.h,40);
+  h.drawCalls.length=0;h.context.drawTimePreview();
+  const previewCopies=h.drawCalls.filter(call=>call[0]==='drawImage'&&call.at(-1)==='time-preview');
+  assert.deepEqual(previewCopies[1].slice(2,6),[p.x,p.y,p.w,p.h],'Preview must use the selected time size');
+  assert(h.drawCalls.some(call=>call[0]==='drawImage'&&call[1]===h.$('frame')&&call.at(-1)==='scratch'&&json(call.slice(2,6)).join(',')==='440,8,192,28'),'Resizing must matte the original time region');
+  await h.context.exportVideo();
+  const args=h.calls.exports.at(-1),graph=args[args.indexOf('-filter_complex')+1];
+  assert(graph.includes('scale=272:40:flags=lanczos'));
+  assert(graph.includes(`overlay=${p.x}:${p.y}`));
+  assert.match(graph,/crop=192:28:440:8:exact=1/,'Resize must not change the source time rectangle');
+  for(const invalid of ['', 'not-a-number','Infinity','NaN','14','91','-1']){
+    h.$('time-size-value').value=invalid;h.$('time-size-value').onchange();
+    assert.equal(item.timeOverlay.widthPercent,85,`Invalid size ${invalid} must keep the previous valid preference`);
+    assert.equal(Number(h.$('time-size-value').value),85,'Invalid numeric input must recover its displayed value');
+    assert.equal(Number(h.$('time-size').value),85);
+  }
+  const next=h.makeFile('avi','sizing-next.avi');await h.context.selectFile(next);
+  assert.equal(next.timeOverlay.widthPercent,40,'Another file starts with the default size');
+  await h.context.selectFile(item);
+  assert.equal(item.timeOverlay.widthPercent,85,'Returning to a file retains its chosen size');
+  h.$('time-size-reset').onclick();
+  assert.equal(item.timeOverlay.widthPercent,40);
+  assert.equal(Number(h.$('time-size').value),40);
+  assert.equal(Number(h.$('time-size-value').value),40);
+  assert.deepEqual(json({crop:item.crop,timeRegion:item.timeRegion,scaleBar:item.scaleBar,start:item.start,end:item.end}),scientific);
+}
+
+// A label already present in the field must keep its original location and
+// native size; changing the requested corner cannot create a duplicate label.
+for(const position of ['top-left','top-right']){
+  const h=harness(),item=await h.choose();
+  item.timeRegion={x:438,y:6,w:192,h:28};item.crop={x:100,y:0,w:540,h:200};
+  Object.assign(item.timeOverlay,{position,widthPercent:85});h.context.syncTimeOverlay();
+  assert(originalTimeVisible(item.crop,item.timeRegion));
+  for(const id of ['time-position','time-size','time-size-value','time-size-reset'])assert.equal(h.$(id).disabled,true,`${id} must be unavailable for an embedded time label`);
+  assert.match(h.$('time-size-note').textContent,/原时间已在选区内/);
+  h.$('time-size').value='20';h.$('time-size').oninput();h.$('time-size-reset').onclick();
+  assert.equal(item.timeOverlay.widthPercent,85,'Disabled controls must not mutate an embedded label');
+  h.drawCalls.length=0;h.context.drawTimePreview();
+  const copies=h.drawCalls.filter(call=>call[0]==='drawImage'&&call.at(-1)==='time-preview');
+  const previewScaleX=h.$('time-preview').width/540,previewScaleY=h.$('time-preview').height/200;
+  assert.deepEqual(copies[1].slice(2,6),[438,6,192,28]);
+  for(const [actual,expected] of copies[1].slice(6,10).map((v,i)=>[v,[338*previewScaleX,6*previewScaleY,192*previewScaleX,28*previewScaleY][i]]))assert(Math.abs(actual-expected)<.001);
+  await h.context.exportVideo();
+  const args=h.calls.exports[0],graph=args[args.indexOf('-filter_complex')+1];
+  assert.doesNotMatch(graph,/,scale=/,'The native label must not be resized');
+  assert.doesNotMatch(graph,/geq=/,'An embedded black background must not be removed by inventing hidden scene pixels');
+  assert(!h.drawCalls.some(call=>call[0]==='putImageData'),'An embedded label bypasses preview matting too');
+  assert.match(graph,/overlay=338:6/,'Original location must be retained instead of moving to the requested corner');
+  item.crop={x:100,y:120,w:320,h:240};h.context.syncTimeOverlay();
+  for(const id of ['time-position','time-size','time-size-value','time-size-reset'])assert.equal(h.$(id).disabled,false);
+  assert.equal(Number(h.$('time-size-value').value),85,'Original size preference returns when the label needs relocation again');
+}
+
+// One shared choice controls the source-time matte and scale rectangle in both
+// preview and export; it does not change time values, source region or calibration.
+{
+  const h=harness(),item=await h.choose();item.timeRegion={x:440,y:8,w:192,h:28};
+  Object.assign(item.scaleBar,{enabled:true,unitsPerPixel:.5,length:50});
+  const scientific=json({crop:item.crop,timeRegion:item.timeRegion,timeOverlay:item.timeOverlay,scaleBar:item.scaleBar});
+  const bar=scaleBarLayout(item.crop,item.scaleBar);
+  for(const transparent of [true,false]){
+    h.drawCalls.length=0;
+    h.$('transparent-annotations').checked=transparent;h.$('transparent-annotations').onchange();
+    assert.equal(item.transparentAnnotations,transparent);
+    assert.equal(h.$('transparent-annotations').checked,transparent);
+    assert(h.drawCalls.some(call=>call[0]==='putImageData'),'Red time preview recolors the original glyph pixels in both background modes');
+    const matte=h.calls.mattes.at(-1);
+    assert.deepEqual(matte.options,{color:'red',transparent},'Preview passes the requested color and shared background choice to the real pixel helper');
+    assert.deepEqual(matte.pixels.slice(4,8),[255,0,0,255],'Bright original glyph pixels become red without generating new text');
+    assert.deepEqual(matte.pixels.slice(0,4),transparent?[255,0,0,0]:[0,0,0,255],'Black source pixels follow the selected background mode');
+    assert.equal(h.drawCalls.some(call=>call[0]==='strokeText'&&call[1]==='50 µm'),transparent,'Transparent scale label keeps a legible text stroke');
+    assert(h.calls.fills.some(call=>call.name==='fillText'&&call.args[0]==='50 µm'&&call.style==='#ffffff'),'Scale label remains white when the time glyphs are red');
+    const background=h.drawCalls.some(call=>call[0]==='fillRect'&&call.slice(1,5).join(',')===[0,0,bar.width,bar.height].join(','));
+    assert.equal(background,!transparent,'Shared choice must remove or retain the scale rectangle');
+    assert(h.drawCalls.some(call=>call[0]==='fillRect'&&call.slice(1,5).join(',')===[bar.barX,bar.barY,100,bar.barHeight].join(',')),'The calibrated white line remains exactly 100 pixels');
+    assert.deepEqual(json({crop:item.crop,timeRegion:item.timeRegion,timeOverlay:item.timeOverlay,scaleBar:item.scaleBar}),scientific);
+    await h.context.exportVideo();
+    const args=h.calls.exports.at(-1),graph=args[args.indexOf('-filter_complex')+1];
+    assert(graph.includes('geq='),'Export recolors original timestamp pixels red in both background modes');
+    assert.match(graph,/g=0:b=0/,'Export time glyphs have red channels only');
+    if(transparent)assert.match(graph,/r=255:g=0:b=0:a='floor/);
+    else assert.match(graph,/g=0:b=0:a=255/);
+    assert.match(graph,/crop=192:28:440:8:exact=1/);
+    assert.match(graph,/\[withtime\]\[bar\]overlay=/,'Scale remains a separate calibrated overlay');
+  }
+  const next=h.makeFile('avi','transparency-next.avi');await h.context.selectFile(next);
+  assert.equal(next.transparentAnnotations,true,'Another video gets the transparent default');
+  await h.context.selectFile(item);
+  assert.equal(item.transparentAnnotations,false,'A video keeps its own background choice');
+  assert.equal(h.$('transparent-annotations').checked,false);
 }
 
 // Scientific units require calibration. Pixel units intentionally do not.
