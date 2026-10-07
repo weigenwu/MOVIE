@@ -536,7 +536,7 @@ canvas.onpointermove=e=>{
 canvas.onpointerup=()=>{
   if(dragging?.mode==='calibration'&&dragging.end){
     const distance=Math.hypot(dragging.end.x-dragging.start.x,dragging.end.y-dragging.start.y);
-    if(distance>=2){active.scaleBar.unitsPerPixel=calibrationFromReference(distance,active.scaleBar.referenceLength);calibrationMode=false;status('标尺已标定');}
+    if(distance>=2){try{active.scaleBar.unitsPerPixel=calibrationFromReference(distance,active.scaleBar.referenceLength);calibrationMode=false;status('标尺已标定');}catch(error){status(error.message,true);}}
   }
   if(dragging?.key==='timeRegion'&&dragging.changed)timestampMode=false;dragging=null;updatePanMode();sync();
 };
