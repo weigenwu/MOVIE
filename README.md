@@ -14,7 +14,7 @@ Validated using this exact WASM engine as a compute library: six AVI/MP4 export 
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/6d3bdf7732acc3cc6f388dcee665c32d424b856b
+Source: https://github.com/weigenwu/MOVIE/tree/22f572fbd31dfbb7a8ca49abff91775d0d1c1860
 
 This branch has no GitHub Actions workflow. The fixed HTML entry pins its stylesheet, FFmpeg wrapper and app module to the same immutable asset commit on raw.githack.com. Their relative imports and workers stay on that revision, so an older cached entry cannot mix with newer scripts. For each update: synchronize and commit the runtime files first; then set the three HTML asset URLs to that commit and push the branch. Verify the fixed entry and all pinned resources. Keep user bookmarks unchanged. For deployment on another static host, use the source HTML's relative asset paths.
 
