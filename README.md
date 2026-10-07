@@ -1,5 +1,9 @@
 # FrameCut static release
 
+2026-10-07 timestamp selection repair: the original shared canvas could accept a normal scientific crop as the timestamp, copying a large duplicate scene into the output. Timestamp selection now has a separate full-frame dialog, an extracted-strip preview and explicit confirmation. The main canvas always edits the scene crop; toggling the timestamp checkbox cannot change that tool. Invalid, oversized, non-horizontal or out-of-bounds source strips are blocked before encoding. The label is still copied frame-by-frame from the original movie, never inferred from playback time. Default output placement is original time at top-right (or top-left), calibrated scale at bottom-right.
+
+Regression checks cover the reported wrong-field path, independent selection, proxy-to-original coordinates, source-strip pixels, cancellation and queued dialog-close events. Seven actual WASM export cases passed independent native decoding, including original time at top-right plus scale at bottom-right. Original user videos and real browser UI interaction were not available for this round of validation.
+
 2026-10-07 follow-up: timestamps are enabled for each new video by default; a missing source region blocks export with an explicit message. Timestamp controls, calibrated scale-bar controls and the shared output preview are now together beside Export. Paused seeks refresh the preview. Output names include `_time` / `_scale` for the selected annotations.
 
 Scale bars support user-defined length, µm/nm/mm/px units and four corners. Physical units require an explicit per-source-pixel calibration or measuring a known reference bar. The measured scale survives crop and view zoom. Invalid, oversized or overlapping annotations block export rather than silently shortening a scientific scale. Preview and export use the same Canvas-generated PNG. Six combined WASM export cases passed independent native decoding: frame-aligned timestamps, exact 100px bars on every frame, lossless RGB equality, small crops, unit conversion and retained source audio. Browser UI interaction remains unverified because no browser was available.
@@ -14,7 +18,7 @@ Validated using this exact WASM engine as a compute library: six AVI/MP4 export 
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/22f572fbd31dfbb7a8ca49abff91775d0d1c1860
+Source: https://github.com/weigenwu/MOVIE/tree/3030b9e4416cb6c9b048c852bea18ef6444b9ce1
 
 This branch has no GitHub Actions workflow. The fixed HTML entry pins its stylesheet, FFmpeg wrapper and app module to the same immutable asset commit on raw.githack.com. Their relative imports and workers stay on that revision, so an older cached entry cannot mix with newer scripts. For each update: synchronize and commit the runtime files first; then set the three HTML asset URLs to that commit and push the branch. Verify the fixed entry and all pinned resources. Keep user bookmarks unchanged. For deployment on another static host, use the source HTML's relative asset paths.
 

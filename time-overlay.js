@@ -1,5 +1,16 @@
 // Copy the original burned-in timestamp from the same decoded frame.
 // Do not infer experiment time from playback seconds or OCR the label.
+export function timeRegionError(region, meta) {
+  if (!region) return '请先选择原时间；不需要时取消勾选。';
+  const {x,y,w,h} = region;
+  if (![x,y,w,h].every(Number.isInteger) || x < 0 || y < 0 || w < 2 || h < 2 ||
+      (meta && (x+w > meta.width || y+h > meta.height))) return '时间区域超出原视频，请重新选择。';
+  // A large scene rectangle must never silently become a timestamp overlay.
+  // This is only a shape guard; the user verifies the original pixels in the picker.
+  if (w < 3*h || (meta && h > meta.height/4)) return '时间区域应是横向的一小条，请只框时间文字。';
+  return '';
+}
+
 export function timeOverlayLayout(crop, region, position = 'top-right') {
   const margin = Math.min(8, Math.floor(Math.min(crop.w, crop.h) * .02));
   const scale = Math.min(1, (crop.w - 2 * margin) / region.w, (crop.h - 2 * margin) / region.h);
@@ -17,9 +28,8 @@ export function videoFilterArgs(crop, timestamp, scaleBar = null) {
   }
   if (!timestamp?.enabled) return ['-map', '0:v:0', '-vf', `${cropFilter(crop)},setsar=1`];
   const r = timestamp.region;
-  if (!r || ![r.x, r.y, r.w, r.h].every(Number.isInteger) || r.x < 0 || r.y < 0 || r.w < 2 || r.h < 2) {
-    throw new Error('请先框选原视频中的时间标记');
-  }
+  const error = timeRegionError(r, timestamp.meta);
+  if (error) throw new Error(error);
   const p = timeOverlayLayout(crop, r, timestamp.position);
   const resize = p.w === r.w && p.h === r.h ? '' : `,scale=${p.w}:${p.h}:flags=neighbor`;
   // One input + split keeps both branches frame-aligned, including trimmed clips.
