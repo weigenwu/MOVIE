@@ -65,17 +65,32 @@ export function scaleBarLayout(crop, settings) {
   };
 }
 
-export function drawScaleBar(ctx, layout) {
+export function drawScaleBar(ctx, layout, { transparent = false } = {}) {
   if (!layout) return;
   ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
   ctx.clearRect(0, 0, layout.width, layout.height);
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  ctx.fillRect(0, 0, layout.width, layout.height);
+  if (!transparent) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(0, 0, layout.width, layout.height);
+  }
   ctx.fillStyle = '#ffffff';
   ctx.font = `${layout.fontSize}px monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
+  if (transparent) {
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+    ctx.lineWidth = 1;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(layout.label, layout.textX, layout.textY);
+  }
   ctx.fillText(layout.label, layout.textX, layout.textY);
+  // No shadow or stroke on the calibrated line: its white width stays exact.
   ctx.fillRect(layout.barX, layout.barY, layout.barWidth, layout.barHeight);
   ctx.restore();
 }

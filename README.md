@@ -1,5 +1,11 @@
 # FrameCut static release
 
+2026-10-07 appearance update: timestamp width defaults to 40% of the cropped output, adjustable from 15–90% by slider or number. Preview and export share layout; Lanczos smooths the exported stamp. New default transparent backgrounds extract the changing original timestamp glyphs as red text, and draw the calibrated scale as a white line plus outlined text without a rectangular backdrop. Uncheck Transparent background to retain the black boxes. All settings remain per input file.
+
+An original timestamp already included within the crop keeps its native pixels: size and position controls are disabled with an explanation. Crop the original label out of the scientific field before resizing or removing the copied strip's background. The tool never reconstructs pixels hidden under a burned-in source label. The calibrated scale line length is unchanged by styling.
+
+This red-glyph release passes timestamp, scale and application/export regression tests plus four actual bundled-WASM cases independently decoded with native FFmpeg: 25% transparent red AVI, 40% transparent red MP4, opaque red AVI, and an unchanged full original timestamp. Each six-frame trim matches source frames 3–8. FFV1 preserves pixels outside annotations; transparent glyph blending has small rounding differences. MP4 is assessed as lossy. The calibrated white line geometry remains 100px. Real browser UI and the user's original large AVI were not tested; no user photographs or QA videos are published.
+
 2026-10-07: automatically locate the original top-right timestamp strip when importing a video. Copy its pixels from each source frame into the cropped output, default top-right; retain the original experiment-time format and values, never infer them from playback seconds. The user no longer needs to draw a timestamp region. The main viewer remains the scientific crop tool.
 
 Detection looks for a compact row of light-neutral characters on a dark background near the top-right. Missing or invalid detections block time-preserving export, with a retry on another frame. There is no large-scene fallback. Per-file regions survive crop/zoom changes, failed retries and file switching. The extracted strip and final composition are previewed beside Export. Calibrated custom scale bars default to bottom-right.
@@ -16,7 +22,7 @@ Validated using this exact WASM engine as a compute library: six AVI/MP4 export 
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/fa70fccccb851cd6113b9849b59f487a01c93e7a
+Source: https://github.com/weigenwu/MOVIE/tree/985f08136e73a844de1aca9f0b0796b43e84e2db
 
 This branch has no GitHub Actions workflow. The fixed HTML entry pins its stylesheet, FFmpeg wrapper and app module to the same immutable asset commit on raw.githack.com. Their relative imports and workers stay on that revision, so an older cached entry cannot mix with newer scripts. For each update: synchronize and commit the runtime files first; then set the three HTML asset URLs to that commit and push the branch. Verify the fixed entry and all pinned resources. Keep user bookmarks unchanged. For deployment on another static host, use the source HTML's relative asset paths.
 

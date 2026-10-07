@@ -1,6 +1,6 @@
 import { openRawAVI } from './raw-avi.js';
 import { folderSetting, writeToFolder, sharedHosting } from './save-location.js';
-import { timeOverlayLayout, videoFilterArgs, timeRegionError } from './time-overlay.js';
+import { timeOverlayLayout, videoFilterArgs, timeRegionError, originalTimeVisible, applyTimeMatte } from './time-overlay.js';
 import { detectTimeRegion } from './auto-time-region.js';
 import { scaleBarLayout, drawScaleBar, calibrationFromReference } from './scale-bar.js';
 const $ = id => document.getElementById(id);
@@ -110,7 +110,8 @@ async function probe(item) {
   if (!(duration > 0 && Number.isFinite(duration) && width >= 2 && height >= 2)) throw new Error('视频时长或尺寸无效');
   item.meta = { width, height, duration, fps, audio: data.streams.some(s => s.codec_type === 'audio'), codec: stream.codec_name };
   item.crop = { x:0, y:0, w:even(width), h:even(height) }; item.start = 0; item.end = duration; item.current = 0; item.aspect = 'free';
-  item.timeOverlay = { enabled:true, position:'top-right' }; item.timeRegion = null; item.autoTimeState = 'idle';
+  item.timeOverlay = { enabled:true, position:'top-right', widthPercent:40, color:'red' }; item.timeRegion = null; item.autoTimeState = 'idle';
+  item.transparentAnnotations = true;
   item.scaleBar = { enabled:false, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, position:'bottom-right' };
 }
 function renderFiles() {
@@ -297,7 +298,7 @@ function annotationError() {
   try {
     const s = scaleBarLayout(active.crop, active.scaleBar);
     if (s && active.timeOverlay.enabled && active.timeRegion) {
-      const t = timeOverlayLayout(active.crop,active.timeRegion,active.timeOverlay.position);
+      const t = timeOverlayLayout(active.crop,active.timeRegion,active.timeOverlay.position,active.timeOverlay.widthPercent);
       if (s.x < t.x+t.w && s.x+s.width > t.x && s.y < t.y+t.h && s.y+s.height > t.y) return '时间与标尺重叠，请更换标尺位置。';
     }
   } catch (error) { return error.message; }
@@ -309,9 +310,15 @@ function annotationSummary() {
 }
 function syncTimeOverlay() {
   const t = active.timeOverlay;
+  $('transparent-annotations').checked = active.transparentAnnotations;
   $('keep-time').checked = t.enabled;
   $('time-options').hidden = !t.enabled;
   $('time-position').value = t.position;
+  const embedded = originalTimeVisible(active.crop,active.timeRegion);
+  $('time-position').disabled = embedded;
+  for (const id of ['time-size','time-size-value']) { $(id).value = t.widthPercent ?? 40; $(id).disabled = embedded; }
+  $('time-size-reset').disabled = embedded;
+  $('time-size-note').textContent = embedded ? '原时间已在选区内，原样保留；裁掉后可调整样式。' : '占裁剪画面宽度';
   $('detect-time').textContent = '重新识别';
   $('time-hint').textContent = active.timeRegion ? active.autoTimeState === 'missing' ? '未能重新定位，沿用上次时间条。' : '已自动保留右上角原时间。' : active.autoTimeState === 'missing' ? '未找到时间条，请换一帧后重新识别。' : '读取画面后自动保留右上角时间。';
   $('time-source-preview').hidden = !t.enabled || !!timeRegionError(active.timeRegion,active.meta);
@@ -337,7 +344,7 @@ function scalePatch() {
   const layout = scaleBarLayout(active.crop,active.scaleBar);
   if (!layout) return null;
   const patch = document.createElement('canvas'); patch.width = layout.width; patch.height = layout.height;
-  drawScaleBar(patch.getContext('2d'),layout);
+  drawScaleBar(patch.getContext('2d'),layout,{transparent:active.transparentAnnotations});
   return {canvas:patch,layout};
 }
 function drawTimePreview() {
@@ -357,8 +364,18 @@ function drawTimePreview() {
     strip.width = Math.max(1,Math.round(r.w*stripScale)); strip.height = Math.max(1,Math.round(r.h*stripScale));
     const sc = strip.getContext('2d'); sc.imageSmoothingEnabled = false;
     sc.drawImage(source,r.x*sx,r.y*sy,r.w*sx,r.h*sy,0,0,strip.width,strip.height);
-    const p = timeOverlayLayout(c, r, active.timeOverlay.position);
-    pc.drawImage(source, r.x*sx, r.y*sy, r.w*sx, r.h*sy, p.x/c.w*preview.width, p.y/c.h*preview.height, p.w/c.w*preview.width, p.h/c.h*preview.height);
+    const p = timeOverlayLayout(c, r, active.timeOverlay.position,active.timeOverlay.widthPercent);
+    pc.imageSmoothingEnabled = true; pc.imageSmoothingQuality = 'high';
+    if (!originalTimeVisible(c,r) && (active.transparentAnnotations || active.timeOverlay.color === 'red')) {
+      const stamp = document.createElement('canvas'); stamp.width = Math.max(1,Math.round(r.w*sx)); stamp.height = Math.max(1,Math.round(r.h*sy));
+      const paint = stamp.getContext('2d',{willReadFrequently:true});
+      paint.drawImage(source,r.x*sx,r.y*sy,r.w*sx,r.h*sy,0,0,stamp.width,stamp.height);
+      paint.putImageData(applyTimeMatte(paint.getImageData(0,0,stamp.width,stamp.height),{color:active.timeOverlay.color,transparent:active.transparentAnnotations}),0,0);
+      pc.drawImage(stamp,p.x/c.w*preview.width,p.y/c.h*preview.height,p.w/c.w*preview.width,p.h/c.h*preview.height);
+    } else {
+      pc.drawImage(source, r.x*sx, r.y*sy, r.w*sx, r.h*sy, p.x/c.w*preview.width, p.y/c.h*preview.height, p.w/c.w*preview.width, p.h/c.h*preview.height);
+    }
+    pc.imageSmoothingEnabled = false;
   }
   try { const patch = scalePatch(); if (patch) { const p = patch.layout; pc.drawImage(patch.canvas,p.x/c.w*preview.width,p.y/c.h*preview.height,p.width/c.w*preview.width,p.height/c.h*preview.height); } } catch { /* Invalid calibration is shown beside Export. */ }
 }
@@ -386,6 +403,16 @@ async function detectOriginalTime(item, force = false) {
 $('keep-time').onchange = async () => { active.timeOverlay.enabled = $('keep-time').checked; sync(); if(active.timeOverlay.enabled&&!active.timeRegion)await task('正在定位原时间…',()=>detectOriginalTime(active)); };
 $('detect-time').onclick = () => task('正在定位原时间…',()=>detectOriginalTime(active,true));
 $('time-position').onchange = () => { active.timeOverlay.position = $('time-position').value; sync(); };
+function setTimeSize(value) {
+  if (!active?.meta || busy || originalTimeVisible(active.crop,active.timeRegion)) { sync(); return; }
+  const percent = value === '' ? NaN : Number(value);
+  if (Number.isFinite(percent) && percent >= 15 && percent <= 90) active.timeOverlay.widthPercent = Math.round(percent);
+  sync();
+}
+$('time-size').oninput = () => setTimeSize($('time-size').value);
+$('time-size-value').onchange = () => setTimeSize($('time-size-value').value);
+$('time-size-reset').onclick = () => setTimeSize(40);
+$('transparent-annotations').onchange = () => { active.transparentAnnotations = $('transparent-annotations').checked; sync(); };
 $('frame').addEventListener('load', drawTimePreview);
 video.addEventListener('loadeddata', drawTimePreview);
 video.addEventListener('seeked', drawTimePreview);
@@ -717,7 +744,7 @@ async function exportVideo(){
       args.push('-i','/scale.png');
     }
     args.push('-t',duration.toFixed(6));
-    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion, meta:active.meta},patch?.layout));
+    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion, meta:active.meta, transparent:active.transparentAnnotations},patch?.layout));
     if($('audio').checked&&active.meta.audio)args.push('-map','0:a:0?');else args.push('-an');
     if(format==='mp4')args.push('-c:v','libx264','-preset','fast','-crf',$('quality').value,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart');
     else args.push('-c:v','ffv1','-level','3','-c:a','pcm_s16le');
