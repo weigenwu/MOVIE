@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 const source = readFileSync(new URL('./src/app.js', import.meta.url), 'utf8');
 const loadModule = file => import(`data:text/javascript;base64,${Buffer.from(readFileSync(new URL(file, import.meta.url), 'utf8')).toString('base64')}`);
 const { timeOverlayLayout, timeRegionError, originalTimeVisible, applyTimeMatte, videoFilterArgs } = await loadModule('./src/time-overlay.js');
-const { scaleBarLayout, drawScaleBar } = await loadModule('./src/scale-bar.js');
+const { scaleBarLayout, drawScaleBar, suggestedScaleLength, calibrationFromReference } = await loadModule('./src/scale-bar.js');
 function section(start, end) {
   const from = source.indexOf(start), to = source.indexOf(end, from + start.length);
   assert(from >= 0 && to > from, `Application section is missing: ${start}`);
@@ -16,16 +16,17 @@ function section(start, end) {
 const realHandlers = [
   section('async function probe(item)', 'function renderFiles()'),
   section('async function selectFile(item)', 'function showVideo()'),
-  section('function annotationError()', 'function syncTimeOverlay()'),
+  section('function updateScaleLength()', 'function syncTimeOverlay()'),
   section('function syncTimeOverlay()', 'function scalePatch()'),
   section('async function detectOriginalTime(', "$('frame').addEventListener"),
   section('function scalePatch()', 'function drawTimePreview()'),
   section('function drawTimePreview()', 'async function detectOriginalTime('),
+  section("$('keep-scale').onchange", 'function cancelSelection()'),
   section('async function exportVideo()', "$('export').onclick=exportVideo;")
 ].join('\n');
 const json = value => JSON.parse(JSON.stringify(value));
 function harness() {
-  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, detections:[], detected:null, decodes:0, mattes:[], fills:[] };
+  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, detections:[], detected:null, scaleDetections:[], detectedScale:null, decodes:0, mattes:[], fills:[] };
   const drawCalls=[];
   const paintFor = owner => ({...Object.fromEntries(['save','restore','clearRect','fillRect','fillText','strokeText','drawImage','putImageData'].map(name => [name,function(...args){drawCalls.push([name,...args,owner]);if(name==='fillText'||name==='fillRect')calls.fills.push({name,args,style:this.fillStyle});}])),
     getImageData(_x,_y,width,height){const data=new Uint8ClampedArray(width*height*4);data.set([0,0,0,255,200,200,200,255,56,56,56,255,8,8,8,255].slice(0,data.length));return {width,height,data};}});
@@ -48,7 +49,7 @@ function harness() {
     resultURL:null, outputFolder:null, dragging:null, spacePan:false, panMode:false, moveMode:false,
     calibrationMode:false, previewEpoch:0, timeOverlayLayout, timeRegionError, originalTimeVisible, videoFilterArgs,
     applyTimeMatte(imageData,options){const result=applyTimeMatte(imageData,options);calls.mattes.push({options:json(options),pixels:Array.from(result.data.slice(0,16))});return result;},
-    scaleBarLayout, drawScaleBar, Blob,
+    scaleBarLayout, drawScaleBar, suggestedScaleLength, calibrationFromReference, Blob,
     URL:{createObjectURL:()=> 'blob:test-result',revokeObjectURL(){}},
     document:{ createElement(type) {
       assert.equal(type,'canvas');
@@ -68,14 +69,18 @@ function harness() {
     nativeVideo:async url=>{context.video.src=context.video.currentSrc=url;context.video.readyState=3;return true;},openRawAVI:async()=>({frames:12}),
     frameAt:async()=>{context.active.frameURL=`blob:frame-${context.active.id}`;$('frame').src=context.active.frameURL;context.video.hidden=true;},showVideo(){context.video.hidden=false;},
     detectTimeRegion:(image,meta)=>{calls.detections.push({image,meta});return calls.detectFn ? calls.detectFn(image,meta) : calls.detected;},
+    detectScaleReference:(image,meta)=>{calls.scaleDetections.push({image,meta});return calls.scaleDetectFn ? calls.scaleDetectFn(image,meta) : calls.detectedScale;},
     stopPlayback(){},cancelSelection(){context.dragging=null;},
     checkCancelled(){},updatePanMode(){},renderFiles(){},resize(){},sync(){if(context.active?.meta)context.syncTimeOverlay();},progress(){},outputLocation(){},
     even:n=>Math.floor(n/2)*2,clamp:(n,min,max)=>Math.min(max,Math.max(min,n)),humanSize:()=> 'test size'
   };
   runInNewContext(realHandlers,context);
   const makeFile = (ext='avi',name=`source.${ext}`) => ({id:name,ext,path:name,file:{name},native:ext==='mp4'});
-  const choose = async (ext='avi') => {
+  const choose = async (ext='avi',{autoScale=false}={}) => {
     const item=makeFile(ext); await context.selectFile(item);
+    // Isolate prior manual-calibration regression cases after testing real import
+    // defaults/detection. New automatic-scale cases opt in to the untouched state.
+    if(!autoScale){item.scaleBar.enabled=false;item.scaleBar.autoLength=false;}
     item.crop={x:100,y:120,w:320,h:240};item.start=.75;item.end=2.25;
     return item;
   };
@@ -423,4 +428,202 @@ for (const timestamp of [false,true]) {
   assert.deepEqual(json({timeRegion:a.timeRegion,timeOverlay:a.timeOverlay,scaleBar:a.scaleBar,crop:a.crop}),saved);
 }
 
-console.log('Application annotation defaults, validation, AVI/MP4 export args, scale PNG/audio/duration, filenames and per-file state checks passed.');
+// Auto scale detection reads the source, calibrates the original pixels, and
+// adapts the labelled integer length to the crop without altering the calibration.
+for(const ext of ['avi','mp4']){
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  h.calls.detectedScale={x:16,y:450,w:100,h:4,pixelLength:100};
+  const seekStates=[];
+  if(ext==='mp4')Object.defineProperty(h.context.video,'currentTime',{set(){
+    seekStates.push({calibration:h.context.active.scaleBar.unitsPerPixel,detections:h.calls.scaleDetections.length});
+    h.context.video.readyState=1;
+  }});
+  const item=await h.choose(ext,{autoScale:true});h.context.syncTimeOverlay();
+  assert.equal(item.scaleBar.enabled,true,'Scale is enabled on import');
+  assert.equal(item.scaleBar.autoLength,true,'Length is automatically matched on import');
+  assert.equal(item.scaleBar.referenceLength,50,'The assumed original reference is explicit');
+  assert.equal(item.scaleBar.referenceUnit,'µm','The physical reference keeps its own unit across pixel display');
+  assert.equal(item.scaleBar.unit,'µm');
+  assert.equal(item.scaleBar.position,'bottom-right');
+  assert.equal(item.scaleBar.unitsPerPixel,.5);
+  assert.equal(item.autoScaleState,'found');
+  assert.deepEqual(json(item.scaleReference),h.calls.detectedScale);
+  assert.equal(h.calls.scaleDetections.length,1);
+  assert.equal(h.calls.scaleDetections[0].meta,item.meta);
+  assert.match(h.$('scale-reference-note').textContent,/50 µm/);
+  assert.equal(h.$('scale-auto-length').checked,true);
+  if(ext==='mp4')assert.deepEqual(seekStates,[{calibration:.5,detections:1}],'Scale detection must precede native seeking too');
+  const crop=json(item.crop),time=json(item.timeRegion),view=json(item.view);
+  assert.equal(item.scaleBar.length,50);
+  assert.equal(scaleBarLayout(item.crop,item.scaleBar).barWidth,100);
+  h.drawCalls.length=0;h.context.drawTimePreview();
+  const bar=scaleBarLayout(item.crop,item.scaleBar);
+  // A real browser seek temporarily hides the preview; restore only readyState.
+  if(ext==='mp4'){h.context.video.readyState=3;h.context.drawTimePreview();}
+  assert(h.drawCalls.some(call=>call[0]==='fillText'&&call[1]==='50 µm'));
+  assert(h.drawCalls.some(call=>call[0]==='fillRect'&&call.slice(1,5).join(',')===[bar.barX,bar.barY,100,bar.barHeight].join(',')));
+  await h.context.exportVideo();
+  const args=h.calls.exports.at(-1),graph=args[args.indexOf('-filter_complex')+1];
+  assert.equal(h.calls.exports.length,1);
+  assert.equal(args[args.indexOf('-ss')+1],'0.750000');
+  assert.equal(args[args.indexOf('-t')+1],'1.500000');
+  assert.match(graph,/crop=192:28:440:8:exact=1/);
+  assert.match(graph,/g=0:b=0/,'Auto scale must retain original red source time');
+  assert(graph.includes(`[withtime][bar]overlay=${bar.x}:${bar.y}`));
+  assert.deepEqual(json(item.crop),crop);assert.deepEqual(json(item.timeRegion),time);assert.deepEqual(json(item.view),view);
+  item.crop={...item.crop,w:160,h:160};h.context.syncTimeOverlay();
+  assert.equal(item.scaleBar.length,20,'A smaller crop selects a smaller meaningful integer label');
+  assert.equal(scaleBarLayout(item.crop,item.scaleBar).barWidth,40);
+  assert.equal(item.scaleBar.unitsPerPixel,.5,'Crop resizing must never recalibrate physical pixels');
+  const attempts=h.calls.scaleDetections.length;
+  await h.context.detectOriginalScale(item);
+  assert.equal(h.calls.scaleDetections.length,attempts,'Known calibration is reused');
+}
+
+// A missing or malformed original bar cannot silently become a scientific scale.
+{
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  const item=await h.choose('avi',{autoScale:true});h.context.syncTimeOverlay();
+  assert.equal(item.scaleBar.enabled,true);assert.equal(item.scaleBar.autoLength,true);
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+  assert.equal(item.autoScaleState,'missing');
+  assert.match(h.$('scale-hint').textContent,/未识别/);
+  await h.context.exportVideo();assert.equal(h.calls.exports.length,0);
+  assert.match(h.calls.status.at(-1)[0],/每像素/);
+  const valid={x:16,y:450,w:100,h:4,pixelLength:100};
+  for(const bad of [null,{...valid,pixelLength:NaN},{...valid,pixelLength:1},{...valid,pixelLength:101},{...valid,x:-1},{...valid,y:479},{...valid,w:0}]){
+    h.calls.detectedScale=bad;
+    assert.equal(await h.context.detectOriginalScale(item,true),false);
+    assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+  }
+  h.calls.detectedScale=valid;await h.$('detect-scale').onclick();
+  assert.equal(item.scaleBar.unitsPerPixel,.5);assert.deepEqual(json(item.scaleReference),valid);
+  h.calls.detectedScale=null;await h.$('detect-scale').onclick();
+  assert.equal(item.autoScaleState,'missing');assert.equal(item.scaleBar.unitsPerPixel,.5);
+  assert.deepEqual(json(item.scaleReference),valid,'Failed retry retains the last measured reference');
+  assert.match(h.$('scale-hint').textContent,/沿用已有标定/);
+  h.$('frame').decode=async()=>{throw new Error('Frame unavailable');};
+  assert.equal(await h.context.detectOriginalScale(item,true),false);
+  assert.equal(item.scaleBar.unitsPerPixel,.5,'Decode failure cannot erase existing calibration');
+}
+
+// Automatic defaults still allow precise integer manual length changes. A new
+// physical reference uses measured pixels; manual calibration severs that link.
+{
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  h.calls.detectedScale={x:16,y:450,w:100,h:4,pixelLength:100};
+  const item=await h.choose('avi',{autoScale:true});h.context.syncTimeOverlay();
+  const scientific=json({crop:item.crop,time:item.timeRegion,view:item.view,start:item.start,end:item.end});
+  h.$('scale-length').value='7';h.$('scale-length').onchange();
+  assert.equal(item.scaleBar.length,7);assert.equal(item.scaleBar.autoLength,false);
+  assert.equal(h.$('scale-auto-length').checked,false);
+  assert.equal(scaleBarLayout(item.crop,item.scaleBar).barWidth,14);
+  for(const invalid of ['', '0','-1','2.5','NaN','Infinity','9007199254740992']){
+    h.$('scale-length').value=invalid;h.$('scale-length').onchange();
+    assert.equal(item.scaleBar.length,7);assert.equal(Number(h.$('scale-length').value),7);
+    assert.equal(item.scaleBar.autoLength,false);
+  }
+  h.$('scale-auto-length').checked=true;h.$('scale-auto-length').onchange();
+  assert.equal(item.scaleBar.autoLength,true);assert.equal(item.scaleBar.length,50);
+  h.$('scale-reference').value='20';h.$('scale-reference').onchange();
+  assert.equal(item.scaleBar.unitsPerPixel,.2);assert.equal(item.scaleReference.pixelLength,100);
+  assert.equal(item.scaleBar.length,20);assert.equal(scaleBarLayout(item.crop,item.scaleBar).barWidth,100);
+  h.$('scale-calibration').value='.25';h.$('scale-calibration').onchange();
+  assert.equal(item.scaleBar.unitsPerPixel,.25);assert.equal(item.scaleReference,null);
+  assert.equal(item.autoScaleState,'manual');assert.equal(item.scaleBar.autoLength,true);
+  h.$('scale-reference').value='50';h.$('scale-reference').onchange();
+  assert.equal(item.scaleBar.unitsPerPixel,.25,'No measured source pixels means a new reference label cannot overwrite manual calibration');
+  const before=json(item.scaleBar);
+  h.$('scale-unit').value='nm';h.$('scale-unit').onchange();
+  assert.equal(item.scaleBar.unitsPerPixel,250);assert.equal(item.scaleBar.referenceLength,50000);
+  assert.equal(item.scaleBar.referenceUnit,'nm','Direct physical-unit conversion updates the stored reference unit');
+  assert.equal(item.scaleBar.length,before.length*1000);
+  assert.equal(scaleBarLayout(item.crop,item.scaleBar).barWidth,80);
+  h.$('scale-unit').value='px';h.$('scale-unit').onchange();
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);assert.equal(item.autoScaleState,'idle');
+  assert.equal(h.$('detect-scale').hidden,true);
+  assert.equal(h.context.annotationError(),'');
+  h.$('scale-unit').value='µm';h.$('scale-unit').onchange();
+  assert.match(h.context.annotationError(),/每像素/);
+  assert.deepEqual(json({crop:item.crop,time:item.timeRegion,view:item.view,start:item.start,end:item.end}),scientific);
+}
+
+// Displaying pixels between physical units must preserve the original physical
+// reference, while requiring fresh measurement before physical export resumes.
+{
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  h.calls.detectedScale={x:16,y:450,w:100,h:4,pixelLength:100};
+  const item=await h.choose('avi',{autoScale:true});h.context.syncTimeOverlay();
+  const scientific=json({crop:item.crop,time:item.timeRegion,start:item.start,end:item.end});
+  const attempts=h.calls.scaleDetections.length;
+  h.$('scale-unit').value='px';h.$('scale-unit').onchange();
+  assert.equal(item.scaleBar.referenceLength,50);assert.equal(item.scaleBar.referenceUnit,'µm');
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+  h.$('scale-unit').value='mm';h.$('scale-unit').onchange();
+  assert.equal(item.scaleBar.referenceLength,.05,'50 µm remains 0.05 mm after pixel display');
+  assert.equal(item.scaleBar.referenceUnit,'mm');
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+  assert.equal(item.autoScaleState,'idle');
+  assert.equal(h.calls.scaleDetections.length,attempts,'Unit changes cannot silently reuse an old measurement');
+  assert.match(h.context.annotationError(),/每像素/);
+  await h.$('detect-scale').onclick();
+  assert.equal(item.scaleBar.unitsPerPixel,.0005,'0.05 mm measured across 100 pixels gives 0.0005 mm per pixel');
+  assert.equal(item.scaleReference.pixelLength,100);assert.equal(item.autoScaleState,'found');
+  h.$('scale-unit').value='px';h.$('scale-unit').onchange();
+  assert.equal(item.scaleBar.referenceLength,.05);assert.equal(item.scaleBar.referenceUnit,'mm');
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+  h.$('scale-unit').value='µm';h.$('scale-unit').onchange();
+  assert.equal(item.scaleBar.referenceLength,50,'Returning from millimetres through pixels restores 50 µm');
+  assert.equal(item.scaleBar.referenceUnit,'µm');
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+  assert.equal(h.calls.scaleDetections.length,attempts+1,'Restoring the unit still awaits explicit redetection');
+  await h.$('detect-scale').onclick();
+  assert.equal(item.scaleBar.unitsPerPixel,.5);assert.equal(item.scaleReference.pixelLength,100);
+  assert.deepEqual(json({crop:item.crop,time:item.timeRegion,start:item.start,end:item.end}),scientific);
+}
+
+// An integer scale must really fit: never shrink a line while retaining its label.
+{
+  const h=harness(),item=await h.choose('avi',{autoScale:true});
+  item.timeOverlay.enabled=false;item.scaleBar.unitsPerPixel=.00001;
+  h.context.syncTimeOverlay();
+  assert.equal(item.scaleBar.length,null);assert.equal(h.$('scale-length').value,'');
+  assert.match(h.context.annotationError(),/放不下整数标尺/);
+  await h.context.exportVideo();assert.equal(h.calls.exports.length,0);
+}
+
+// Source ownership and calibration settings may change during image decoding.
+// Neither a stale frame nor a result for an old unit/reference may be committed.
+for(const change of ['file','url','unit','reference']){
+  const h=harness(),item=await h.choose('avi',{autoScale:true});let finish;
+  h.$('frame').decode=()=>new Promise(resolve=>{finish=resolve;});
+  h.calls.detectedScale={x:16,y:450,w:100,h:4,pixelLength:100};
+  const before=h.calls.scaleDetections.length,pending=h.context.detectOriginalScale(item);
+  if(change==='file')h.context.active=h.makeFile('avi','new-active.avi');
+  if(change==='url')h.$('frame').src='blob:replaced';
+  if(change==='unit')item.scaleBar.unit='nm';
+  if(change==='reference')item.scaleBar.referenceLength=20;
+  finish();assert.equal(await pending,false);
+  assert.equal(h.calls.scaleDetections.length,before);
+  assert.equal(item.scaleBar.unitsPerPixel,null);assert.equal(item.scaleReference,null);
+}
+
+// Each imported video keeps its own manual/automatic choice and calibration.
+{
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  h.calls.detectedScale={x:16,y:450,w:100,h:4,pixelLength:100};
+  const first=await h.choose('avi',{autoScale:true});h.context.syncTimeOverlay();
+  h.$('scale-length').value='10';h.$('scale-length').onchange();
+  const saved=json({scaleBar:first.scaleBar,scaleReference:first.scaleReference,autoScaleState:first.autoScaleState});
+  const next=h.makeFile('avi','auto-scale-next.avi');h.calls.detectedScale={x:16,y:450,w:200,h:4,pixelLength:200};
+  await h.context.selectFile(next);
+  assert.equal(next.scaleBar.autoLength,true);assert.equal(next.scaleBar.unitsPerPixel,.25);
+  assert.equal(next.scaleReference.pixelLength,200);
+  const attempts=h.calls.scaleDetections.length;
+  await h.context.selectFile(first);
+  assert.deepEqual(json({scaleBar:first.scaleBar,scaleReference:first.scaleReference,autoScaleState:first.autoScaleState}),saved);
+  assert.equal(h.calls.scaleDetections.length,attempts,'Returning to a calibrated file must not resample another file');
+  assert.equal(h.$('scale-auto-length').checked,false);assert.equal(Number(h.$('scale-length').value),10);
+}
+
+console.log('Application annotation defaults, automatic scale calibration/length, manual controls, source lifecycle, AVI/MP4 export args, PNG/audio/duration and per-file state checks passed.');

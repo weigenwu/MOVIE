@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const code = await readFile(new URL('./src/scale-bar.js', import.meta.url), 'utf8');
-const { scaleBarLayout, calibrationFromReference, drawScaleBar } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { scaleBarLayout, suggestedScaleLength, calibrationFromReference, drawScaleBar } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const crop = { x: 80, y: 100, w: 320, h: 240 };
 const settings = { enabled: true, length: 50, unit: 'µm', unitsPerPixel: .5 };
 assert.equal(calibrationFromReference(100, 50), .5);
@@ -10,6 +10,7 @@ assert.equal(scaleBarLayout(null, { enabled: false }), null);
 const initial = scaleBarLayout(crop, settings);
 assert.equal(initial.barWidth, 100);
 assert.equal(initial.label, '50 µm');
+assert.equal(initial.barHeight, 4);
 assert.equal(initial.x, 4);
 assert.equal(initial.y + initial.height, crop.h - 4);
 assert.equal(scaleBarLayout({ ...crop, x: 1000, y: 9999 }, settings).barWidth, 100);
@@ -57,6 +58,37 @@ assert.throws(() => scaleBarLayout(crop, { ...settings, position: 'middle' }), /
 assert.throws(() => calibrationFromReference(Number.MIN_VALUE, Number.MAX_VALUE), /范围/);
 assert.throws(() => calibrationFromReference(Number.MAX_VALUE, Number.MIN_VALUE), /范围/);
 assert.throws(() => scaleBarLayout(crop, { ...settings, unitsPerPixel: Number.MIN_VALUE }), /范围/);
+// Automatic length is a suggestion only; the original calibration and manual
+// length remain untouched, including settings passed from an immutable store.
+const originalSettings = Object.freeze({ ...settings });
+assert.equal(suggestedScaleLength(crop, originalSettings), 50);
+assert.equal(suggestedScaleLength({w:200,h:160}, originalSettings), 20);
+assert.equal(suggestedScaleLength({w:100,h:100}, originalSettings), 10);
+assert.equal(suggestedScaleLength({w:640,h:480}, originalSettings), 100);
+assert.equal(suggestedScaleLength({w:320,h:240}, {...settings, unit:'px', unitsPerPixel:undefined}), 100);
+assert.equal(originalSettings.unitsPerPixel, .5);
+assert.equal(originalSettings.length, 50);
+assert.equal(scaleBarLayout(crop, { ...settings, length:37 }).barWidth, 74);
+assert.equal(scaleBarLayout(crop, { ...settings, length:37 }).label, '37 µm');
+// 1 mm would be 2,000 source pixels and cannot fit; do not choose 0.05 mm or
+// silently change the calibration merely to satisfy an integer preference.
+assert.equal(suggestedScaleLength(crop, { ...settings, unit:'mm', unitsPerPixel:.0005 }), null);
+assert.equal(suggestedScaleLength({w:16,h:16}, settings), null);
+assert.equal(suggestedScaleLength(crop, { ...settings, unitsPerPixel:undefined }), null);
+assert.equal(suggestedScaleLength(crop, { ...settings, unitsPerPixel:NaN }), null);
+for (const w of [64, 96, 200, 320, 1024]) for (const h of [64, 160, 240, 480]) {
+  for (const unitsPerPixel of [.05, .25, .5, 2, 10]) {
+    const c = {w,h}, s = {...settings, unitsPerPixel};
+    const length = suggestedScaleLength(c,s);
+    if (length === null) continue;
+    assert(Number.isSafeInteger(length) && length >= 1);
+    assert(/^[125]0*$/.test(String(length)));
+    const p = scaleBarLayout(c, {...s,length});
+    assert.equal(p.barWidth, Math.round(length / unitsPerPixel));
+    assert(p.x >= 0 && p.y >= 0 && p.x+p.width <= w && p.y+p.height <= h);
+    assert.equal(p.barHeight, 2 * Math.max(2, Math.round(p.fontSize / 5)));
+  }
+}
 // Verify canvas drawing uses exact geometry and never rescales the calibrated bar.
 const calls = [];
 const ctx = Object.fromEntries(['save', 'clearRect', 'fillRect', 'fillText', 'strokeText', 'restore'].map(name => [name, (...args) => calls.push([name, ...args])]));
@@ -64,6 +96,7 @@ drawScaleBar(ctx, initial);
 assert.deepEqual(calls.at(-2), ['fillRect', initial.barX, initial.barY, 100, initial.barHeight]);
 assert(calls.some(call => call[0] === 'fillText' && call[1] === '50 µm'));
 assert.equal(ctx.textAlign, 'center');
+assert.equal(ctx.font, `bold ${initial.fontSize}px monospace`);
 assert.deepEqual(calls.filter(call => call[0] === 'fillRect')[0], ['fillRect', 0, 0, initial.width, initial.height]);
 assert.equal(calls.filter(call => call[0] === 'strokeText').length, 0);
 calls.length = 0;
@@ -77,4 +110,4 @@ assert.equal(ctx.shadowOffsetX, 0);
 assert.equal(ctx.shadowOffsetY, 0);
 assert.equal(ctx.shadowBlur, 0);
 assert.equal(ctx.lineWidth, 1);
-console.log('Scale bar calibration, four corners, exact pixel length, invalid values, small crops, legacy background and transparent rendering passed.');
+console.log('Scale bar calibration, automatic integer lengths, bounds, exact line width, bold font, thicker line and transparent rendering passed.');
