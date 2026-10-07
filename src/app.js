@@ -1,13 +1,14 @@
 import { openRawAVI } from './raw-avi.js';
 import { folderSetting, writeToFolder } from './save-location.js';
 import { timeOverlayLayout, videoFilterArgs } from './time-overlay.js';
+import { scaleBarLayout, drawScaleBar, calibrationFromReference } from './scale-bar.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
 const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
 let previewEpoch = 0, previewTimer = null;
-let panMode = false, spacePan = false, moveMode = false, timestampMode = false;
+let panMode = false, spacePan = false, moveMode = false, timestampMode = false, calibrationMode = false;
 let logLines = [], resultURL = null;
 let outputFolder = null, outputPermission = 'prompt', locationReady = false, locationBusy = false, savingFile = false, lastExport = null;
 let folderRemembered = true;
@@ -24,7 +25,7 @@ function controls() {
   $('grant-output').disabled = locked;
   $('clear-output').disabled = locked;
   $('save-again').disabled = locked;
-  $('export').disabled = locked || (active?.timeOverlay?.enabled && !active.timeRegion);
+  $('export').disabled = locked || !!annotationError();
   $('cancel').disabled = savingFile;
   $('edit-controls').disabled = busy || !active?.meta;
   $('view-controls').disabled = busy || !active?.meta;
@@ -108,7 +109,8 @@ async function probe(item) {
   if (!(duration > 0 && Number.isFinite(duration) && width >= 2 && height >= 2)) throw new Error('视频时长或尺寸无效');
   item.meta = { width, height, duration, fps, audio: data.streams.some(s => s.codec_type === 'audio'), codec: stream.codec_name };
   item.crop = { x:0, y:0, w:even(width), h:even(height) }; item.start = 0; item.end = duration; item.current = 0; item.aspect = 'free';
-  item.timeOverlay = { enabled:false, position:'top-right' }; item.timeRegion = null;
+  item.timeOverlay = { enabled:true, position:'top-right' }; item.timeRegion = null;
+  item.scaleBar = { enabled:false, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, position:'bottom-left' };
 }
 function renderFiles() {
   $('file-count').textContent = files.length;
@@ -181,7 +183,7 @@ async function selectFile(item) {
   if (active?.meta) active.exportSettings = { format:$('format').value, quality:$('quality').value, audio:$('audio').checked };
   await task('正在读取视频…', async () => {
     if (active?.raw && active !== item) { URL.revokeObjectURL(active.frameURL); active.frameURL = null; active.frameIndex = null; }
-    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; moveMode = false; timestampMode = false; updatePanMode();
+    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; moveMode = false; timestampMode = false; calibrationMode = false; updatePanMode();
     $('result').hidden = true; $('media-stage').hidden = true; canvas.hidden = true; $('crop-badge').hidden = true; $('empty-state').hidden = true; renderFiles();
     $('active-name').textContent = item.file.name;
     $('active-name').title = item.path;
@@ -211,7 +213,7 @@ async function selectFile(item) {
     renderFiles();
   });
 }
-function showVideo() { video.hidden = false; $('frame').hidden = true; $('preview-label').textContent = active.native ? '' : '片段预览'; }
+function showVideo() { video.hidden = false; $('frame').hidden = true; $('preview-label').textContent = active.native ? '' : '片段预览'; drawTimePreview(); }
 async function frameAt(seconds) {
   if (active.raw) { await rawFrameAt(active, seconds, previewEpoch); return; }
   const path = await mount(active);
@@ -226,6 +228,7 @@ async function frameAt(seconds) {
   active.frameURL = URL.createObjectURL(new Blob([bytes], { type:'image/png' }));
   $('frame').src = active.frameURL; await $('frame').decode();
   video.hidden = true; $('frame').hidden = false; $('preview-label').textContent = '逐帧预览';
+  drawTimePreview();
 }
 function stopPlayback() {
   previewEpoch++; clearTimeout(previewTimer); previewTimer = null;
@@ -245,6 +248,7 @@ async function rawFrameAt(item, seconds, epoch) {
   } else $('frame').src = item.frameURL;
   video.hidden = true; $('frame').hidden = false; $('frame').dataset.index = index;
   $('preview-label').textContent = '';
+  drawTimePreview();
 }
 function playRaw() {
   const item = active, epoch = ++previewEpoch, start = item.current, started = performance.now();
@@ -280,8 +284,24 @@ function sync() {
   $('clock').innerHTML = `${time(current)} <span>/ ${time(meta.duration)}</span>`;
   $('selection-duration').textContent = `保留 ${(end-start).toFixed(3)} 秒`;
   $('output-size').textContent = `${crop.w} × ${crop.h}`; $('output-duration').textContent = `${(end-start).toFixed(3)} 秒`;
-  $('crop-badge').textContent = timestampMode ? '框选原时间 · Esc 取消' : `${crop.w} × ${crop.h}`;
+  $('crop-badge').textContent = calibrationMode ? '沿原标尺两端拖线 · Esc 取消' : timestampMode ? '框选原时间 · Esc 取消' : `${crop.w} × ${crop.h}`;
   syncTimeOverlay(); drawCrop();
+}
+function annotationError() {
+  if (!active?.meta) return '';
+  if (active.timeOverlay.enabled && !active.timeRegion) return '请先框选原时间；不需要时取消勾选。';
+  try {
+    const s = scaleBarLayout(active.crop, active.scaleBar);
+    if (s && active.timeOverlay.enabled && active.timeRegion) {
+      const t = timeOverlayLayout(active.crop,active.timeRegion,active.timeOverlay.position);
+      if (s.x < t.x+t.w && s.x+s.width > t.x && s.y < t.y+t.h && s.y+s.height > t.y) return '时间与标尺重叠，请更换标尺位置。';
+    }
+  } catch (error) { return error.message; }
+  return '';
+}
+function annotationSummary() {
+  if (!active?.meta) return '';
+  return `原时间：${active.timeOverlay.enabled ? active.timeRegion ? '已加入' : '待框选' : '关闭'} · 标尺：${active.scaleBar.enabled ? `${active.scaleBar.length} ${active.scaleBar.unit}` : '关闭'}`;
 }
 function syncTimeOverlay() {
   const t = active.timeOverlay;
@@ -291,12 +311,33 @@ function syncTimeOverlay() {
   $('select-time').textContent = timestampMode ? '取消框选' : active.timeRegion ? '重选时间区域' : '框选时间区域';
   $('select-time').setAttribute('aria-pressed', String(timestampMode));
   $('time-hint').textContent = timestampMode ? '拖框圈住原视频的时间文字。' : active.timeRegion ? '' : '先框选原视频中的时间标记。';
-  $('time-preview').hidden = !t.enabled || !active.timeRegion;
-  $('export').disabled = busy || locationBusy || !locationReady || (t.enabled && !active.timeRegion);
+  const s = active.scaleBar;
+  $('keep-scale').checked = s.enabled; $('scale-options').hidden = !s.enabled;
+  for (const [id,key] of [['scale-length','length'],['scale-unit','unit'],['scale-calibration','unitsPerPixel'],['scale-reference','referenceLength'],['scale-position','position']]) $(id).value = s[key] ?? '';
+  $('scale-calibration-label').textContent = `每像素 / ${s.unit}`;
+  $('scale-reference-label').textContent = `原标尺长度 / ${s.unit}`;
+  $('scale-calibration-row').hidden = $('scale-measurement').hidden = s.unit === 'px';
+  $('measure-scale').textContent = calibrationMode ? '取消测量' : '测量原标尺';
+  $('measure-scale').setAttribute('aria-pressed', String(calibrationMode));
+  let scaleError = '';
+  try { scaleBarLayout(active.crop,s); } catch (error) { scaleError = error.message; }
+  $('scale-hint').textContent = calibrationMode ? '从原标尺横线的一端拖到另一端。' : scaleError;
+  $('time-preview').hidden = !t.enabled && !s.enabled;
+  $('annotation-preview').hidden = $('time-preview').hidden;
+  $('annotation-status').textContent = annotationSummary();
+  $('annotation-error').textContent = annotationError();
+  $('export').disabled = busy || locationBusy || !locationReady || !!annotationError();
   drawTimePreview();
 }
+function scalePatch() {
+  const layout = scaleBarLayout(active.crop,active.scaleBar);
+  if (!layout) return null;
+  const patch = document.createElement('canvas'); patch.width = layout.width; patch.height = layout.height;
+  drawScaleBar(patch.getContext('2d'),layout);
+  return {canvas:patch,layout};
+}
 function drawTimePreview() {
-  if (!active?.timeOverlay?.enabled || !active.timeRegion) return;
+  if (!active?.meta || (!active.timeOverlay.enabled && !active.scaleBar.enabled)) return;
   const source = video.hidden ? $('frame') : video;
   const sw = source === video ? video.videoWidth : source.naturalWidth;
   const sh = source === video ? video.videoHeight : source.naturalHeight;
@@ -307,11 +348,14 @@ function drawTimePreview() {
   const pc = preview.getContext('2d'); pc.imageSmoothingEnabled = false;
   const sx = sw / active.meta.width, sy = sh / active.meta.height;
   pc.drawImage(source, c.x*sx, c.y*sy, c.w*sx, c.h*sy, 0, 0, preview.width, preview.height);
-  const p = timeOverlayLayout(c, r, active.timeOverlay.position);
-  pc.drawImage(source, r.x*sx, r.y*sy, r.w*sx, r.h*sy, p.x/c.w*preview.width, p.y/c.h*preview.height, p.w/c.w*preview.width, p.h/c.h*preview.height);
+  if (active.timeOverlay.enabled && r) {
+    const p = timeOverlayLayout(c, r, active.timeOverlay.position);
+    pc.drawImage(source, r.x*sx, r.y*sy, r.w*sx, r.h*sy, p.x/c.w*preview.width, p.y/c.h*preview.height, p.w/c.w*preview.width, p.h/c.h*preview.height);
+  }
+  try { const patch = scalePatch(); if (patch) { const p = patch.layout; pc.drawImage(patch.canvas,p.x/c.w*preview.width,p.y/c.h*preview.height,p.width/c.w*preview.width,p.height/c.h*preview.height); } } catch { /* Invalid calibration is shown beside Export. */ }
 }
 function selectTimeRegion(enabled) {
-  stopPlayback(); dragging = null; timestampMode = enabled;
+  stopPlayback(); dragging = null; timestampMode = enabled; calibrationMode = false;
   if (enabled) { moveMode = false; panMode = false; active.view = { zoom:1, x:0, y:0 }; resize(); }
   updatePanMode(); sync();
 }
@@ -320,6 +364,24 @@ $('select-time').onclick = () => selectTimeRegion(!timestampMode);
 $('time-position').onchange = () => { active.timeOverlay.position = $('time-position').value; sync(); };
 $('frame').addEventListener('load', drawTimePreview);
 video.addEventListener('loadeddata', drawTimePreview);
+video.addEventListener('seeked', drawTimePreview);
+$('keep-scale').onchange = () => { active.scaleBar.enabled = $('keep-scale').checked; calibrationMode = false; sync(); };
+for (const [id,key] of [['scale-length','length'],['scale-calibration','unitsPerPixel'],['scale-reference','referenceLength']]) $(id).onchange = () => { active.scaleBar[key] = $(id).value === '' ? null : Number($(id).value); sync(); };
+$('scale-unit').onchange = () => {
+  const s = active.scaleBar, next = $('scale-unit').value, toMicrometres = {'µm':1,nm:.001,mm:1000};
+  if (s.unit !== 'px' && next !== 'px') {
+    const ratio = toMicrometres[s.unit] / toMicrometres[next];
+    for (const key of ['length','unitsPerPixel','referenceLength']) if (s[key] != null) s[key] *= ratio;
+  } else s.unitsPerPixel = null;
+  s.unit = next; calibrationMode = false; sync();
+};
+$('scale-position').onchange = () => { active.scaleBar.position = $('scale-position').value; sync(); };
+$('measure-scale').onclick = () => {
+  if (!(active.scaleBar.referenceLength > 0)) { status('请填写原标尺标注的实际长度。',true); return; }
+  stopPlayback(); dragging = null; calibrationMode = !calibrationMode; timestampMode = false; moveMode = false; panMode = false;
+  if (calibrationMode) { active.view = {zoom:1,x:0,y:0}; resize(); }
+  updatePanMode(); sync();
+};
 function cancelSelection() {
   if (dragging?.mode === 'new') active[dragging.key] = dragging.previous;
   dragging = null;
@@ -333,8 +395,8 @@ function expandWorkspace(expanded) {
 }
 $('expand-workspace').onclick = () => expandWorkspace($('expand-workspace').getAttribute('aria-expanded') !== 'true');
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && (dragging || moveMode || panMode || timestampMode) && !document.querySelector('dialog[open]')) {
-    cancelSelection(); timestampMode = false; moveMode = false; panMode = false; updatePanMode(); sync(); return;
+  if (e.key === 'Escape' && (dragging || moveMode || panMode || timestampMode || calibrationMode) && !document.querySelector('dialog[open]')) {
+    cancelSelection(); timestampMode = false; calibrationMode = false; moveMode = false; panMode = false; updatePanMode(); sync(); return;
   }
   if (e.key === 'Escape' && $('expand-workspace').getAttribute('aria-expanded') === 'true' && !document.querySelector('dialog[open]')) {
     expandWorkspace(false); $('expand-workspace').focus();
@@ -372,7 +434,7 @@ function updatePanMode() {
   canvas.classList.toggle('pan-ready', panMode || spacePan);
   canvas.classList.toggle('panning', dragging?.mode === 'pan');
 }
-$('move-mode').onclick = () => { stopPlayback(); dragging = null; timestampMode = false; moveMode = !moveMode; if (moveMode) panMode = false; updatePanMode(); sync(); };
+$('move-mode').onclick = () => { stopPlayback(); dragging = null; timestampMode = false; calibrationMode = false; moveMode = !moveMode; if (moveMode) panMode = false; updatePanMode(); sync(); };
 $('zoom').oninput = () => zoomTo(Number($('zoom').value));
 $('zoom-in').onclick = () => zoomTo(active.view.zoom * 1.25);
 $('zoom-out').onclick = () => zoomTo(active.view.zoom / 1.25);
@@ -387,10 +449,20 @@ document.addEventListener('keydown', e => {
   e.preventDefault(); spacePan = true; updatePanMode();
 });
 document.addEventListener('keyup', e => { if (e.code === 'Space') { spacePan = false; updatePanMode(); } });
-window.addEventListener('blur', () => { spacePan = false; dragging = null; updatePanMode(); });
+window.addEventListener('blur', () => { spacePan = false; cancelSelection(); updatePanMode(); sync(); });
 function drawCrop() {
   if (!active?.meta || canvas.hidden) return;
   const c = timestampMode ? active.timeRegion : active.crop, m = active.meta, box = $('media-stage').getBoundingClientRect(), overlay = canvas.getBoundingClientRect(), unit=devicePixelRatio;
+  if (calibrationMode) {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if (dragging?.mode === 'calibration' && dragging.end) {
+      const project = p => [(box.left-overlay.left+p.x/m.width*box.width)*unit,(box.top-overlay.top+p.y/m.height*box.height)*unit];
+      const a=project(dragging.start),b=project(dragging.end);
+      ctx.strokeStyle='#73e5b1';ctx.lineWidth=2*unit;ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke();
+      ctx.fillStyle='#73e5b1'; for (const p of [a,b]) ctx.fillRect(p[0]-4*unit,p[1]-4*unit,8*unit,8*unit);
+    }
+    return;
+  }
   if (!c) { ctx.clearRect(0,0,canvas.width,canvas.height); return; }
   const sx = box.width / m.width * unit, sy = box.height / m.height * unit, ox = (box.left - overlay.left) * unit, oy = (box.top - overlay.top) * unit;
   const x = ox+c.x*sx, y = oy+c.y*sy, w = c.w*sx, h = c.h*sy;
@@ -426,6 +498,7 @@ canvas.onpointerdown=e=>{
   if(busy||!active?.meta||!e.isPrimary||![0,1].includes(e.button))return; stopPlayback();
   if(panMode||spacePan||e.button===1){dragging={mode:'pan',startX:e.clientX,startY:e.clientY,x:active.view.x,y:active.view.y};canvas.setPointerCapture(e.pointerId);e.preventDefault();updatePanMode();return;}
   const rect=$('media-stage').getBoundingClientRect();
+  if(calibrationMode){if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)return;dragging={mode:'calibration',start:position(e),end:null};canvas.setPointerCapture(e.pointerId);e.preventDefault();return;}
   const key=timestampMode?'timeRegion':'crop',p=position(e),c=active[key]||active.crop;
   const handle=active[key]?cropHandleAt(c,active.meta,rect,e.clientX,e.clientY):-1;
   if(handle<0&&(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom))return;
@@ -435,6 +508,7 @@ canvas.onpointerdown=e=>{
 canvas.onpointermove=e=>{
   if(busy||!active?.meta)return;
   if(!dragging){
+    if(calibrationMode&&!panMode&&!spacePan){canvas.style.cursor='crosshair';return;}
     if(panMode||spacePan){canvas.style.cursor='';return;}
     const rect=$('media-stage').getBoundingClientRect(),c=timestampMode?active.timeRegion:active.crop;
     if(!c){canvas.style.cursor='crosshair';return;}
@@ -444,6 +518,7 @@ canvas.onpointermove=e=>{
     return;
   }
   if(dragging.mode==='pan'){active.view.x=dragging.x+e.clientX-dragging.startX;active.view.y=dragging.y+e.clientY-dragging.startY;resize();return;}
+  if(dragging.mode==='calibration'){dragging.end=position(e);drawCrop();return;}
   const p=position(e),d=dragging,c=d.crop,m=active.meta;
   if(d.mode==='move'){active[d.key]=normalizedCrop({...c,x:c.x+p.x-d.start.x,y:c.y+p.y-d.start.y});sync();return;}
   let left=c.x,right=c.x+c.w,top=c.y,bottom=c.y+c.h;
@@ -458,10 +533,16 @@ canvas.onpointermove=e=>{
   if(ratio){if(w/h>ratio)w=h*ratio;else h=w/ratio;if(d.mode==='resize'){if([0,6,7].includes(d.handle))x=c.x+c.w-w;if([0,1,2].includes(d.handle))y=c.y+c.h-h;}else{if(p.x<d.start.x)x=d.start.x-w;if(p.y<d.start.y)y=d.start.y-h;}}
   d.changed=true;active[d.key]=normalizedCrop({x,y,w:Math.min(w,m.width-x),h:Math.min(h,m.height-y)});sync();
 };
-canvas.onpointerup=()=>{if(dragging?.key==='timeRegion'&&dragging.changed)timestampMode=false;dragging=null;updatePanMode();sync();};
+canvas.onpointerup=()=>{
+  if(dragging?.mode==='calibration'&&dragging.end){
+    const distance=Math.hypot(dragging.end.x-dragging.start.x,dragging.end.y-dragging.start.y);
+    if(distance>=2){active.scaleBar.unitsPerPixel=calibrationFromReference(distance,active.scaleBar.referenceLength);calibrationMode=false;status('标尺已标定');}
+  }
+  if(dragging?.key==='timeRegion'&&dragging.changed)timestampMode=false;dragging=null;updatePanMode();sync();
+};
 canvas.onpointercancel=canvas.onlostpointercapture=()=>{cancelSelection();updatePanMode();sync();};
 canvas.onpointerleave=()=>{if(!dragging)updatePanMode();};
-canvas.onkeydown=e=>{if(!active?.meta||busy)return;const key=timestampMode?'timeRegion':'crop',c=active[key];if(!c)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active[key]=normalizedCrop({...c,x:c.x+x,y:c.y+y});sync();}};
+canvas.onkeydown=e=>{if(!active?.meta||busy||calibrationMode)return;const key=timestampMode?'timeRegion':'crop',c=active[key];if(!c)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active[key]=normalizedCrop({...c,x:c.x+x,y:c.y+y});sync();}};
 for(const key of ['x','y','w','h'])$('crop-'+key).onchange=()=>{
   const value=Number($('crop-'+key).value);if(!Number.isFinite(value)){sync();return;}
   const c={...active.crop,[key]:value},ratio=aspectRatio();if(ratio&&key==='w')c.h=c.w/ratio;if(ratio&&key==='h')c.w=c.h*ratio;active.crop=normalizedCrop(c);sync();
@@ -472,7 +553,7 @@ $('crop-side').onchange=()=>{
   active.crop=normalizedCrop({...active.crop,w:side,h:side});sync();
 };
 $('aspect').onchange=()=>{active.aspect=$('aspect').value;const ratio=aspectRatio();if(ratio){let w=active.crop.w,h=w/ratio;if(h>active.meta.height){h=active.meta.height;w=h*ratio;}active.crop=normalizedCrop({...active.crop,w,h});}sync();};
-$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};timestampMode=false;moveMode=false;panMode=false;updatePanMode();sync();};
+$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};timestampMode=false;calibrationMode=false;moveMode=false;panMode=false;updatePanMode();sync();};
 function setTime(which,value){
   if(!Number.isFinite(value)){sync();return;}const gap=Math.min(1/active.meta.fps,active.meta.duration);
   if(which==='start')active.start=clamp(value,0,active.end-gap);else active.end=clamp(value,active.start+gap,active.meta.duration);stopPlayback();sync();
@@ -574,7 +655,7 @@ async function saveCompletedExport() {
     lastExport.saved = true;
     $('result-title').textContent = '已保存到文件夹';
     $('result-info').textContent = `${outputFolder.name} / ${savedName} · ${humanSize(lastExport.blob.size)}`;
-    $('result-note').textContent = '同名文件自动编号。';
+    $('result-note').textContent = lastExport.annotations + ' · 同名文件自动编号。';
     $('download').textContent = '另存一份';
     status(`已保存到「${outputFolder.name}」：${savedName}`);
   } catch {
@@ -594,16 +675,25 @@ $('save-again').onclick = async () => {
 restoreOutputLocation();
 async function exportVideo(){
   if(!active?.meta||busy||locationBusy||!locationReady)return;
+  const invalid = annotationError(); if (invalid) { status(invalid,true); return; }
   await task('正在准备导出…',async()=>{
     // Ask while the export click still supplies user activation, before encoding.
     if (!await ensureOutputAccess()) return;
     checkCancelled();
     const path=await mount(active),format=$('format').value,c={...active.crop},duration=active.end-active.start;
     if(!(duration>0&&c.w>=2&&c.h>=2&&c.x+c.w<=active.meta.width&&c.y+c.h<=active.meta.height))throw new Error('裁剪参数无效');
-    const out=`/output.${format}`,name=`${active.file.name.replace(/\.[^.]+$/,'')}_crop_${c.w}x${c.h}_${active.start.toFixed(3)}-${active.end.toFixed(3)}.${format}`;
+    const patch=scalePatch(), annotations=annotationSummary();
+    const out=`/output.${format}`,name=`${active.file.name.replace(/\.[^.]+$/,'')}_crop_${c.w}x${c.h}_${active.start.toFixed(3)}-${active.end.toFixed(3)}${active.timeOverlay.enabled?'_time':''}${patch?'_scale':''}.${format}`;
     processingDuration=duration;progress('正在导出视频，请保持页面打开…',0);
-    const args=['-ss',active.start.toFixed(6),'-i',path,'-t',duration.toFixed(6)];
-    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion}));
+    const args=['-ss',active.start.toFixed(6),'-i',path];
+    if(patch){
+      const png=await new Promise(resolve=>patch.canvas.toBlob(resolve,'image/png'));
+      if(!png)throw new Error('标尺图片生成失败');
+      await engine.writeFile('/scale.png',new Uint8Array(await png.arrayBuffer()));
+      args.push('-i','/scale.png');
+    }
+    args.push('-t',duration.toFixed(6));
+    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion},patch?.layout));
     if($('audio').checked&&active.meta.audio)args.push('-map','0:a:0?');else args.push('-an');
     if(format==='mp4')args.push('-c:v','libx264','-preset','fast','-crf',$('quality').value,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart');
     else args.push('-c:v','ffv1','-level','3','-c:a','pcm_s16le');
@@ -611,13 +701,13 @@ async function exportVideo(){
     try{
       await exec(args);progress('正在准备下载…');const data=await engine.readFile(out);if(!data.length)throw new Error('导出文件为空');
       const blob=new Blob([data],{type:format==='mp4'?'video/mp4':'video/x-msvideo'});
-      lastExport={blob,name,saved:false};
+      lastExport={blob,name,saved:false,annotations};
       if(resultURL)URL.revokeObjectURL(resultURL);resultURL=URL.createObjectURL(blob);
       $('download').href=resultURL;$('download').download=name;$('result-info').textContent=`${name} · ${humanSize(data.length)}`;$('result').hidden=false;
-      $('result-title').textContent='导出完成';$('download').textContent='下载视频';$('result-note').textContent='';outputLocation();
+      $('result-title').textContent='导出完成';$('download').textContent='下载视频';$('result-note').textContent=annotations;outputLocation();
       if(outputFolder)await saveCompletedExport();
       else{status('');$('download').click();}
-    }finally{await removeTemp(out);}
+    }finally{await removeTemp(out);await removeTemp('/scale.png');}
   });
 }
 $('export').onclick=exportVideo;
