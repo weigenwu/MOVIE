@@ -1,12 +1,13 @@
 import { openRawAVI } from './raw-avi.js';
 import { folderSetting, writeToFolder, sharedHosting } from './save-location.js';
+import { timeOverlayLayout, videoFilterArgs } from './time-overlay.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
 const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
 let previewEpoch = 0, previewTimer = null;
-let panMode = false, spacePan = false, moveMode = false;
+let panMode = false, spacePan = false, moveMode = false, timestampMode = false;
 let logLines = [], resultURL = null;
 let outputFolder = null, outputPermission = 'prompt', locationReady = false, locationBusy = false, savingFile = false, lastExport = null;
 let folderRemembered = true;
@@ -23,7 +24,7 @@ function controls() {
   $('grant-output').disabled = locked;
   $('clear-output').disabled = locked;
   $('save-again').disabled = locked;
-  $('export').disabled = locked;
+  $('export').disabled = locked || (active?.timeOverlay?.enabled && !active.timeRegion);
   $('cancel').disabled = savingFile;
   $('edit-controls').disabled = busy || !active?.meta;
   $('view-controls').disabled = busy || !active?.meta;
@@ -107,6 +108,7 @@ async function probe(item) {
   if (!(duration > 0 && Number.isFinite(duration) && width >= 2 && height >= 2)) throw new Error('视频时长或尺寸无效');
   item.meta = { width, height, duration, fps, audio: data.streams.some(s => s.codec_type === 'audio'), codec: stream.codec_name };
   item.crop = { x:0, y:0, w:even(width), h:even(height) }; item.start = 0; item.end = duration; item.current = 0; item.aspect = 'free';
+  item.timeOverlay = { enabled:false, position:'top-right' }; item.timeRegion = null;
 }
 function renderFiles() {
   $('file-count').textContent = files.length;
@@ -179,7 +181,7 @@ async function selectFile(item) {
   if (active?.meta) active.exportSettings = { format:$('format').value, quality:$('quality').value, audio:$('audio').checked };
   await task('正在读取视频…', async () => {
     if (active?.raw && active !== item) { URL.revokeObjectURL(active.frameURL); active.frameURL = null; active.frameIndex = null; }
-    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; moveMode = false; updatePanMode();
+    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; moveMode = false; timestampMode = false; updatePanMode();
     $('result').hidden = true; $('media-stage').hidden = true; canvas.hidden = true; $('crop-badge').hidden = true; $('empty-state').hidden = true; renderFiles();
     $('active-name').textContent = item.file.name;
     $('active-name').title = item.path;
@@ -278,7 +280,49 @@ function sync() {
   $('clock').innerHTML = `${time(current)} <span>/ ${time(meta.duration)}</span>`;
   $('selection-duration').textContent = `保留 ${(end-start).toFixed(3)} 秒`;
   $('output-size').textContent = `${crop.w} × ${crop.h}`; $('output-duration').textContent = `${(end-start).toFixed(3)} 秒`;
-  $('crop-badge').textContent = `${crop.w} × ${crop.h}`; drawCrop();
+  $('crop-badge').textContent = timestampMode ? '框选原时间 · Esc 取消' : `${crop.w} × ${crop.h}`;
+  syncTimeOverlay(); drawCrop();
+}
+function syncTimeOverlay() {
+  const t = active.timeOverlay;
+  $('keep-time').checked = t.enabled;
+  $('time-options').hidden = !t.enabled;
+  $('time-position').value = t.position;
+  $('select-time').textContent = timestampMode ? '取消框选' : active.timeRegion ? '重选时间区域' : '框选时间区域';
+  $('select-time').setAttribute('aria-pressed', String(timestampMode));
+  $('time-hint').textContent = timestampMode ? '拖框圈住原视频的时间文字。' : active.timeRegion ? '' : '先框选原视频中的时间标记。';
+  $('time-preview').hidden = !t.enabled || !active.timeRegion;
+  $('export').disabled = busy || locationBusy || !locationReady || (t.enabled && !active.timeRegion);
+  drawTimePreview();
+}
+function drawTimePreview() {
+  if (!active?.timeOverlay?.enabled || !active.timeRegion) return;
+  const source = video.hidden ? $('frame') : video;
+  const sw = source === video ? video.videoWidth : source.naturalWidth;
+  const sh = source === video ? video.videoHeight : source.naturalHeight;
+  if (!sw || !sh || (source === video && video.readyState < 2)) return;
+  const preview = $('time-preview'), c = active.crop, r = active.timeRegion;
+  const scale = Math.min(1, 440 / c.w, 240 / c.h);
+  preview.width = Math.max(1, Math.round(c.w * scale)); preview.height = Math.max(1, Math.round(c.h * scale));
+  const pc = preview.getContext('2d'); pc.imageSmoothingEnabled = false;
+  const sx = sw / active.meta.width, sy = sh / active.meta.height;
+  pc.drawImage(source, c.x*sx, c.y*sy, c.w*sx, c.h*sy, 0, 0, preview.width, preview.height);
+  const p = timeOverlayLayout(c, r, active.timeOverlay.position);
+  pc.drawImage(source, r.x*sx, r.y*sy, r.w*sx, r.h*sy, p.x/c.w*preview.width, p.y/c.h*preview.height, p.w/c.w*preview.width, p.h/c.h*preview.height);
+}
+function selectTimeRegion(enabled) {
+  stopPlayback(); dragging = null; timestampMode = enabled;
+  if (enabled) { moveMode = false; panMode = false; active.view = { zoom:1, x:0, y:0 }; resize(); }
+  updatePanMode(); sync();
+}
+$('keep-time').onchange = () => { active.timeOverlay.enabled = $('keep-time').checked; selectTimeRegion(active.timeOverlay.enabled && !active.timeRegion); };
+$('select-time').onclick = () => selectTimeRegion(!timestampMode);
+$('time-position').onchange = () => { active.timeOverlay.position = $('time-position').value; sync(); };
+$('frame').addEventListener('load', drawTimePreview);
+video.addEventListener('loadeddata', drawTimePreview);
+function cancelSelection() {
+  if (dragging?.mode === 'new') active[dragging.key] = dragging.previous;
+  dragging = null;
 }
 function expandWorkspace(expanded) {
   document.querySelector('.workspace').classList.toggle('expanded', expanded);
@@ -289,9 +333,8 @@ function expandWorkspace(expanded) {
 }
 $('expand-workspace').onclick = () => expandWorkspace($('expand-workspace').getAttribute('aria-expanded') !== 'true');
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && (dragging || moveMode || panMode) && !document.querySelector('dialog[open]')) {
-    if (dragging?.mode === 'new') { active.crop = dragging.crop; dragging = null; sync(); }
-    dragging = null; moveMode = false; panMode = false; updatePanMode(); return;
+  if (e.key === 'Escape' && (dragging || moveMode || panMode || timestampMode) && !document.querySelector('dialog[open]')) {
+    cancelSelection(); timestampMode = false; moveMode = false; panMode = false; updatePanMode(); sync(); return;
   }
   if (e.key === 'Escape' && $('expand-workspace').getAttribute('aria-expanded') === 'true' && !document.querySelector('dialog[open]')) {
     expandWorkspace(false); $('expand-workspace').focus();
@@ -329,7 +372,7 @@ function updatePanMode() {
   canvas.classList.toggle('pan-ready', panMode || spacePan);
   canvas.classList.toggle('panning', dragging?.mode === 'pan');
 }
-$('move-mode').onclick = () => { stopPlayback(); dragging = null; moveMode = !moveMode; if (moveMode) panMode = false; updatePanMode(); };
+$('move-mode').onclick = () => { stopPlayback(); dragging = null; timestampMode = false; moveMode = !moveMode; if (moveMode) panMode = false; updatePanMode(); sync(); };
 $('zoom').oninput = () => zoomTo(Number($('zoom').value));
 $('zoom-in').onclick = () => zoomTo(active.view.zoom * 1.25);
 $('zoom-out').onclick = () => zoomTo(active.view.zoom / 1.25);
@@ -347,11 +390,12 @@ document.addEventListener('keyup', e => { if (e.code === 'Space') { spacePan = f
 window.addEventListener('blur', () => { spacePan = false; dragging = null; updatePanMode(); });
 function drawCrop() {
   if (!active?.meta || canvas.hidden) return;
-  const {crop:c,meta:m} = active, box = $('media-stage').getBoundingClientRect(), overlay = canvas.getBoundingClientRect(), unit=devicePixelRatio;
+  const c = timestampMode ? active.timeRegion : active.crop, m = active.meta, box = $('media-stage').getBoundingClientRect(), overlay = canvas.getBoundingClientRect(), unit=devicePixelRatio;
+  if (!c) { ctx.clearRect(0,0,canvas.width,canvas.height); return; }
   const sx = box.width / m.width * unit, sy = box.height / m.height * unit, ox = (box.left - overlay.left) * unit, oy = (box.top - overlay.top) * unit;
   const x = ox+c.x*sx, y = oy+c.y*sy, w = c.w*sx, h = c.h*sy;
   ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#0009'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.clearRect(x,y,w,h);
-  ctx.strokeStyle='#bca5ff'; ctx.lineWidth=1.5*unit; ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle=timestampMode?'#ffc879':'#bca5ff'; ctx.lineWidth=1.5*unit; ctx.strokeRect(x,y,w,h);
   ctx.strokeStyle='#ffffff36'; ctx.lineWidth=unit*.6;
   for(let i=1;i<=2;i++){ctx.beginPath();ctx.moveTo(x+w*i/3,y);ctx.lineTo(x+w*i/3,y+h);ctx.moveTo(x,y+h*i/3);ctx.lineTo(x+w,y+h*i/3);ctx.stroke();}
   ctx.fillStyle='#ede4ff'; for(const [i,[px,py]] of handles(c).entries()){const size=(i%2?8:10)*unit;ctx.fillRect(ox+px*sx-size/2,oy+py*sy-size/2,size,size);}
@@ -382,17 +426,18 @@ canvas.onpointerdown=e=>{
   if(busy||!active?.meta||!e.isPrimary||![0,1].includes(e.button))return; stopPlayback();
   if(panMode||spacePan||e.button===1){dragging={mode:'pan',startX:e.clientX,startY:e.clientY,x:active.view.x,y:active.view.y};canvas.setPointerCapture(e.pointerId);e.preventDefault();updatePanMode();return;}
   const rect=$('media-stage').getBoundingClientRect();
-  const p=position(e),c=active.crop;
-  const handle=cropHandleAt(c,active.meta,rect,e.clientX,e.clientY);
+  const key=timestampMode?'timeRegion':'crop',p=position(e),c=active[key]||active.crop;
+  const handle=active[key]?cropHandleAt(c,active.meta,rect,e.clientX,e.clientY):-1;
   if(handle<0&&(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom))return;
   const inside=p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
-  dragging={start:p,crop:{...c},handle,mode:handle>=0?'resize':moveMode&&inside?'move':'new'};canvas.setPointerCapture(e.pointerId);e.preventDefault();
+  dragging={key,previous:active[key]?{...active[key]}:null,start:p,crop:{...c},handle,mode:handle>=0?'resize':moveMode&&inside?'move':'new'};canvas.setPointerCapture(e.pointerId);e.preventDefault();
 };
 canvas.onpointermove=e=>{
   if(busy||!active?.meta)return;
   if(!dragging){
     if(panMode||spacePan){canvas.style.cursor='';return;}
-    const rect=$('media-stage').getBoundingClientRect(),c=active.crop;
+    const rect=$('media-stage').getBoundingClientRect(),c=timestampMode?active.timeRegion:active.crop;
+    if(!c){canvas.style.cursor='crosshair';return;}
     const handle=cropHandleAt(c,active.meta,rect,e.clientX,e.clientY),p=position(e);
     const inside=e.clientX>=rect.left&&e.clientX<=rect.right&&e.clientY>=rect.top&&e.clientY<=rect.bottom&&p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
     canvas.style.cursor=handle>=0?['nwse-resize','ns-resize','nesw-resize','ew-resize','nwse-resize','ns-resize','nesw-resize','ew-resize'][handle]:moveMode&&inside?'move':'crosshair';
@@ -400,7 +445,7 @@ canvas.onpointermove=e=>{
   }
   if(dragging.mode==='pan'){active.view.x=dragging.x+e.clientX-dragging.startX;active.view.y=dragging.y+e.clientY-dragging.startY;resize();return;}
   const p=position(e),d=dragging,c=d.crop,m=active.meta;
-  if(d.mode==='move'){active.crop=normalizedCrop({...c,x:c.x+p.x-d.start.x,y:c.y+p.y-d.start.y});sync();return;}
+  if(d.mode==='move'){active[d.key]=normalizedCrop({...c,x:c.x+p.x-d.start.x,y:c.y+p.y-d.start.y});sync();return;}
   let left=c.x,right=c.x+c.w,top=c.y,bottom=c.y+c.h;
   if(d.mode==='new'){
     const rect=$('media-stage').getBoundingClientRect();
@@ -409,14 +454,14 @@ canvas.onpointermove=e=>{
     d.changed=true;left=d.start.x;right=p.x;top=d.start.y;bottom=p.y;
   }
   else{if([0,6,7].includes(d.handle))left=p.x;if([2,3,4].includes(d.handle))right=p.x;if([0,1,2].includes(d.handle))top=p.y;if([4,5,6].includes(d.handle))bottom=p.y;}
-  let x=Math.min(left,right),y=Math.min(top,bottom),w=Math.abs(right-left),h=Math.abs(bottom-top);const ratio=aspectRatio();
+  let x=Math.min(left,right),y=Math.min(top,bottom),w=Math.abs(right-left),h=Math.abs(bottom-top);const ratio=d.key==='crop'?aspectRatio():0;
   if(ratio){if(w/h>ratio)w=h*ratio;else h=w/ratio;if(d.mode==='resize'){if([0,6,7].includes(d.handle))x=c.x+c.w-w;if([0,1,2].includes(d.handle))y=c.y+c.h-h;}else{if(p.x<d.start.x)x=d.start.x-w;if(p.y<d.start.y)y=d.start.y-h;}}
-  active.crop=normalizedCrop({x,y,w:Math.min(w,m.width-x),h:Math.min(h,m.height-y)});sync();
+  d.changed=true;active[d.key]=normalizedCrop({x,y,w:Math.min(w,m.width-x),h:Math.min(h,m.height-y)});sync();
 };
-canvas.onpointerup=()=>{dragging=null;updatePanMode();};
-canvas.onpointercancel=canvas.onlostpointercapture=()=>{if(dragging?.mode==='new'){active.crop=dragging.crop;sync();}dragging=null;updatePanMode();};
+canvas.onpointerup=()=>{if(dragging?.key==='timeRegion'&&dragging.changed)timestampMode=false;dragging=null;updatePanMode();sync();};
+canvas.onpointercancel=canvas.onlostpointercapture=()=>{cancelSelection();updatePanMode();sync();};
 canvas.onpointerleave=()=>{if(!dragging)updatePanMode();};
-canvas.onkeydown=e=>{if(!active?.meta||busy)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active.crop=normalizedCrop({...active.crop,x:active.crop.x+x,y:active.crop.y+y});sync();}};
+canvas.onkeydown=e=>{if(!active?.meta||busy)return;const key=timestampMode?'timeRegion':'crop',c=active[key];if(!c)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active[key]=normalizedCrop({...c,x:c.x+x,y:c.y+y});sync();}};
 for(const key of ['x','y','w','h'])$('crop-'+key).onchange=()=>{
   const value=Number($('crop-'+key).value);if(!Number.isFinite(value)){sync();return;}
   const c={...active.crop,[key]:value},ratio=aspectRatio();if(ratio&&key==='w')c.h=c.w/ratio;if(ratio&&key==='h')c.w=c.h*ratio;active.crop=normalizedCrop(c);sync();
@@ -427,7 +472,7 @@ $('crop-side').onchange=()=>{
   active.crop=normalizedCrop({...active.crop,w:side,h:side});sync();
 };
 $('aspect').onchange=()=>{active.aspect=$('aspect').value;const ratio=aspectRatio();if(ratio){let w=active.crop.w,h=w/ratio;if(h>active.meta.height){h=active.meta.height;w=h*ratio;}active.crop=normalizedCrop({...active.crop,w,h});}sync();};
-$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};moveMode=false;panMode=false;updatePanMode();sync();};
+$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};timestampMode=false;moveMode=false;panMode=false;updatePanMode();sync();};
 function setTime(which,value){
   if(!Number.isFinite(value)){sync();return;}const gap=Math.min(1/active.meta.fps,active.meta.duration);
   if(which==='start')active.start=clamp(value,0,active.end-gap);else active.end=clamp(value,active.start+gap,active.meta.duration);stopPlayback();sync();
@@ -557,9 +602,9 @@ async function exportVideo(){
     if(!(duration>0&&c.w>=2&&c.h>=2&&c.x+c.w<=active.meta.width&&c.y+c.h<=active.meta.height))throw new Error('裁剪参数无效');
     const out=`/output.${format}`,name=`${active.file.name.replace(/\.[^.]+$/,'')}_crop_${c.w}x${c.h}_${active.start.toFixed(3)}-${active.end.toFixed(3)}.${format}`;
     processingDuration=duration;progress('正在导出视频，请保持页面打开…',0);
-    const args=['-ss',active.start.toFixed(6),'-i',path,'-t',duration.toFixed(6),'-map','0:v:0'];
+    const args=['-ss',active.start.toFixed(6),'-i',path,'-t',duration.toFixed(6)];
+    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion}));
     if($('audio').checked&&active.meta.audio)args.push('-map','0:a:0?');else args.push('-an');
-    args.push('-vf',`crop=${c.w}:${c.h}:${c.x}:${c.y}:exact=1,setsar=1`);
     if(format==='mp4')args.push('-c:v','libx264','-preset','fast','-crf',$('quality').value,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart');
     else args.push('-c:v','ffv1','-level','3','-c:a','pcm_s16le');
     args.push('-threads','1',out);

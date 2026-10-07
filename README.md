@@ -1,5 +1,9 @@
 # FrameCut static release
 
+2026-10-07 prepared update (not yet published): optional original timestamp overlay. Select the source label region once, then place its frame-aligned pixels at the top-left or top-right of the cropped export. Includes a small output preview. Oversized labels are reduced proportionally. Existing URLs are unchanged pending the user's publishing decision.
+
+Validated using this exact WASM engine as a compute library: six AVI/MP4 export cases cover both corners, scaling, nonzero trim starts, disabled overlay, and audio retention. Native FFmpeg independently decoded every output; FFV1 RGB frames matched the expected composite byte-for-byte. Browser UI verification was unavailable in this session.
+
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
 Source: https://github.com/weigenwu/MOVIE/tree/47a4da967fa7ff50debbc1a511f817bdaf4949ce
