@@ -19,6 +19,39 @@ export function calibrationFromReference(pixelLength, realLength) {
   return result;
 }
 
+// Choose a readable integer label near one quarter of the crop's width.
+// This only suggests a physical length; it never changes the calibration.
+export function suggestedScaleLength(crop, settings) {
+  if (!crop || !Number.isSafeInteger(crop.w) || !Number.isSafeInteger(crop.h) ||
+      crop.w < 2 || crop.h < 2 || !units.has(settings?.unit)) return null;
+  try {
+    if (settings.unit !== 'px') positiveNumber(settings.unitsPerPixel, '缺少标定');
+  } catch {
+    return null;
+  }
+  let selected = null;
+  let closest = Infinity;
+  const targetPixels = crop.w * .25;
+  // All candidates are exact, safe integers. No fractional or fabricated label.
+  for (let power = 0; power <= 15; power++) {
+    for (const factor of [1, 2, 5]) {
+      const length = factor * 10 ** power;
+      try {
+        // Single-direction call: layout does not invoke this suggestion helper.
+        const layout = scaleBarLayout(crop, { ...settings, enabled: true, length });
+        const distance = Math.abs(layout.barWidth - targetPixels);
+        if (distance < closest) {
+          closest = distance;
+          selected = length;
+        }
+      } catch {
+        // Reject lengths whose calibrated line or complete label cannot fit.
+      }
+    }
+  }
+  return selected;
+}
+
 export function scaleBarLayout(crop, settings) {
   if (!settings?.enabled) return null;
   if (!crop || !Number.isSafeInteger(crop.w) || !Number.isSafeInteger(crop.h) || crop.w < 2 || crop.h < 2) {
@@ -39,8 +72,8 @@ export function scaleBarLayout(crop, settings) {
   const size = Math.min(crop.w, crop.h);
   const margin = Math.min(8, Math.max(2, Math.floor(size * .02)));
   const padding = 4;
-  const fontSize = Math.min(20, Math.max(10, Math.floor(size / 20)));
-  const barHeight = Math.max(2, Math.round(fontSize / 5));
+  const fontSize = Math.min(20, Math.max(12, Math.floor(size / 20)));
+  const barHeight = 2 * Math.max(2, Math.round(fontSize / 5));
   const gap = 4;
   // Hide floating-point tails from unit conversion without altering geometry.
   // Numeric conversion and a fixed unit allowlist keep the label plain text.
@@ -80,7 +113,7 @@ export function drawScaleBar(ctx, layout, { transparent = false } = {}) {
     ctx.fillRect(0, 0, layout.width, layout.height);
   }
   ctx.fillStyle = '#ffffff';
-  ctx.font = `${layout.fontSize}px monospace`;
+  ctx.font = `bold ${layout.fontSize}px monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   if (transparent) {

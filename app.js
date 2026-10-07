@@ -2,7 +2,8 @@ import { openRawAVI } from './raw-avi.js';
 import { folderSetting, writeToFolder, sharedHosting } from './save-location.js';
 import { timeOverlayLayout, videoFilterArgs, timeRegionError, originalTimeVisible, applyTimeMatte } from './time-overlay.js';
 import { detectTimeRegion } from './auto-time-region.js';
-import { scaleBarLayout, drawScaleBar, calibrationFromReference } from './scale-bar.js';
+import { scaleBarLayout, drawScaleBar, calibrationFromReference, suggestedScaleLength } from './scale-bar.js';
+import { detectScaleReference } from './auto-scale-region.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
 const files = [];
@@ -112,7 +113,8 @@ async function probe(item) {
   item.crop = { x:0, y:0, w:even(width), h:even(height) }; item.start = 0; item.end = duration; item.current = 0; item.aspect = 'free';
   item.timeOverlay = { enabled:true, position:'top-right', widthPercent:40, color:'red' }; item.timeRegion = null; item.autoTimeState = 'idle';
   item.transparentAnnotations = true;
-  item.scaleBar = { enabled:false, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, position:'bottom-right' };
+  item.scaleBar = { enabled:true, autoLength:true, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, referenceUnit:'µm', position:'bottom-right' };
+  item.scaleReference = null; item.autoScaleState = 'idle';
 }
 function renderFiles() {
   $('file-count').textContent = files.length;
@@ -214,6 +216,7 @@ async function selectFile(item) {
     status('');
     // Inspect the loaded frame before a seek can temporarily make it unavailable.
     if (item.timeOverlay.enabled && !item.timeRegion) await detectOriginalTime(item);
+    if (item.scaleBar.enabled && !item.scaleBar.unitsPerPixel) await detectOriginalScale(item);
     if (item.native && video.currentTime !== item.current) video.currentTime = item.current;
     renderFiles();
   });
@@ -292,9 +295,15 @@ function sync() {
   $('crop-badge').textContent = calibrationMode ? '沿原标尺两端拖线 · Esc 取消' : `${crop.w} × ${crop.h}`;
   syncTimeOverlay(); drawCrop();
 }
+function updateScaleLength() {
+  const s = active?.scaleBar;
+  if (s?.autoLength && (s.unit === 'px' || s.unitsPerPixel > 0)) s.length = suggestedScaleLength(active.crop,s);
+}
 function annotationError() {
   if (!active?.meta) return '';
+  updateScaleLength();
   if (active.timeOverlay.enabled) { const error = timeRegionError(active.timeRegion,active.meta); if (error) return error; }
+  if (active.scaleBar.enabled && active.scaleBar.autoLength && active.scaleBar.length === null && (active.scaleBar.unit === 'px' || active.scaleBar.unitsPerPixel > 0)) return '当前选区放不下整数标尺，请扩大选区或更换单位。';
   try {
     const s = scaleBarLayout(active.crop, active.scaleBar);
     if (s && active.timeOverlay.enabled && active.timeRegion) {
@@ -309,6 +318,7 @@ function annotationSummary() {
   return `原时间：${active.timeOverlay.enabled ? active.timeRegion ? '自动保留' : '待定位' : '关闭'} · 标尺：${active.scaleBar.enabled ? `${active.scaleBar.length} ${active.scaleBar.unit}` : '关闭'}`;
 }
 function syncTimeOverlay() {
+  updateScaleLength();
   const t = active.timeOverlay;
   $('transparent-annotations').checked = active.transparentAnnotations;
   $('keep-time').checked = t.enabled;
@@ -324,15 +334,18 @@ function syncTimeOverlay() {
   $('time-source-preview').hidden = !t.enabled || !!timeRegionError(active.timeRegion,active.meta);
   const s = active.scaleBar;
   $('keep-scale').checked = s.enabled; $('scale-options').hidden = !s.enabled;
+  $('scale-auto-length').checked = s.autoLength;
   for (const [id,key] of [['scale-length','length'],['scale-unit','unit'],['scale-calibration','unitsPerPixel'],['scale-reference','referenceLength'],['scale-position','position']]) $(id).value = s[key] ?? '';
   $('scale-calibration-label').textContent = `每像素 / ${s.unit}`;
   $('scale-reference-label').textContent = `原标尺长度 / ${s.unit}`;
   $('scale-calibration-row').hidden = $('scale-measurement').hidden = s.unit === 'px';
+  $('detect-scale').hidden = s.unit === 'px';
+  $('scale-reference-note').textContent = s.unit === 'px' ? '按像素显示' : `原标尺：${s.referenceLength ?? '—'} ${s.unit}`;
   $('measure-scale').textContent = calibrationMode ? '取消测量' : '测量原标尺';
   $('measure-scale').setAttribute('aria-pressed', String(calibrationMode));
   let scaleError = '';
   try { scaleBarLayout(active.crop,s); } catch (error) { scaleError = error.message; }
-  $('scale-hint').textContent = calibrationMode ? '从原标尺横线的一端拖到另一端。' : scaleError;
+  $('scale-hint').textContent = calibrationMode ? '从原标尺横线的一端拖到另一端。' : scaleError ? (s.unitsPerPixel == null && s.unit !== 'px' ? '未识别到原标尺，请重新识别或手动测量。' : scaleError) : `${s.autoLength ? '已自动匹配，可直接修改长度。' : '手动长度；勾选自动匹配可恢复。'}${active.autoScaleState === 'missing' ? ' 本次识别未成功，沿用已有标定。' : ''}`;
   $('time-preview').hidden = !t.enabled && !s.enabled;
   $('annotation-preview').hidden = $('time-preview').hidden;
   $('annotation-status').textContent = annotationSummary();
@@ -400,6 +413,29 @@ async function detectOriginalTime(item, force = false) {
     item.timeRegion = region; item.autoTimeState = 'found'; sync(); return true;
   } catch { if (active === item) { item.autoTimeState = 'missing'; sync(); } return false; }
 }
+async function detectOriginalScale(item, force = false) {
+  if (!item?.meta || item !== active || !item.scaleBar.enabled || item.scaleBar.unit === 'px' || (item.scaleBar.unitsPerPixel > 0 && !force)) return false;
+  const source = video.hidden ? $('frame') : video;
+  const expectedURL = source === video ? (item.native ? item.nativeURL : item.proxy?.url) : item.frameURL;
+  const ownsSource = () => active === item && expectedURL && (source === video ? source.currentSrc || source.src : source.src) === expectedURL;
+  const unit = item.scaleBar.unit, referenceLength = item.scaleBar.referenceLength;
+  try {
+    if (!ownsSource()) return false;
+    if (source !== video) await source.decode();
+    if (!ownsSource() || item.scaleBar.unit !== unit || item.scaleBar.referenceLength !== referenceLength || (source === video && source.readyState < 2)) return false;
+    const sw = source === video ? source.videoWidth : source.naturalWidth, sh = source === video ? source.videoHeight : source.naturalHeight;
+    if (!sw || !sh) return false;
+    const sample = document.createElement('canvas'), ratio = Math.min(1,2400/sw);
+    sample.width = Math.max(1,Math.round(sw*ratio)); sample.height = Math.max(1,Math.round(sh*ratio));
+    const paint = sample.getContext('2d',{willReadFrequently:true}); paint.drawImage(source,0,0,sample.width,sample.height);
+    const ref = detectScaleReference(paint.getImageData(0,0,sample.width,sample.height),item.meta);
+    sample.width = sample.height = 0;
+    if (!ownsSource()) return false;
+    if (!ref || ![ref.x,ref.y,ref.w,ref.h,ref.pixelLength].every(Number.isFinite) || ref.pixelLength < 2 || ref.pixelLength > ref.w || ref.x < 0 || ref.y < 0 || ref.w <= 0 || ref.h <= 0 || ref.x+ref.w > item.meta.width || ref.y+ref.h > item.meta.height) { item.autoScaleState = 'missing'; sync(); return false; }
+    item.scaleBar.unitsPerPixel = calibrationFromReference(ref.pixelLength,referenceLength);
+    item.scaleReference = ref; item.autoScaleState = 'found'; sync(); return true;
+  } catch { if (active === item) { item.autoScaleState = 'missing'; sync(); } return false; }
+}
 $('keep-time').onchange = async () => { active.timeOverlay.enabled = $('keep-time').checked; sync(); if(active.timeOverlay.enabled&&!active.timeRegion)await task('正在定位原时间…',()=>detectOriginalTime(active)); };
 $('detect-time').onclick = () => task('正在定位原时间…',()=>detectOriginalTime(active,true));
 $('time-position').onchange = () => { active.timeOverlay.position = $('time-position').value; sync(); };
@@ -416,14 +452,39 @@ $('transparent-annotations').onchange = () => { active.transparentAnnotations = 
 $('frame').addEventListener('load', drawTimePreview);
 video.addEventListener('loadeddata', drawTimePreview);
 video.addEventListener('seeked', drawTimePreview);
-$('keep-scale').onchange = () => { active.scaleBar.enabled = $('keep-scale').checked; calibrationMode = false; sync(); };
-for (const [id,key] of [['scale-length','length'],['scale-calibration','unitsPerPixel'],['scale-reference','referenceLength']]) $(id).onchange = () => { active.scaleBar[key] = $(id).value === '' ? null : Number($(id).value); sync(); };
+$('keep-scale').onchange = async () => { active.scaleBar.enabled = $('keep-scale').checked; calibrationMode = false; sync(); if(active.scaleBar.enabled && !active.scaleBar.unitsPerPixel && active.scaleBar.unit !== 'px') await task('正在识别原标尺…',()=>detectOriginalScale(active)); };
+$('scale-auto-length').onchange = () => { active.scaleBar.autoLength = $('scale-auto-length').checked; sync(); };
+$('detect-scale').onclick = () => task('正在识别原标尺…',()=>detectOriginalScale(active,true));
+$('scale-length').onchange = () => {
+  const value = Number($('scale-length').value);
+  if (Number.isSafeInteger(value) && value > 0) { active.scaleBar.length = value; active.scaleBar.autoLength = false; }
+  else status('标尺长度请填写正整数。',true);
+  sync();
+};
+$('scale-calibration').onchange = () => {
+  active.scaleBar.unitsPerPixel = $('scale-calibration').value === '' ? null : Number($('scale-calibration').value);
+  active.scaleReference = null; active.autoScaleState = 'manual'; sync();
+};
+$('scale-reference').onchange = () => {
+  const value = Number($('scale-reference').value);
+  if (Number.isFinite(value) && value > 0) {
+    active.scaleBar.referenceLength = value;
+    if (active.scaleReference) active.scaleBar.unitsPerPixel = calibrationFromReference(active.scaleReference.pixelLength,value);
+  } else status('请输入原标尺的实际长度。',true);
+  sync();
+};
 $('scale-unit').onchange = () => {
   const s = active.scaleBar, next = $('scale-unit').value, toMicrometres = {'µm':1,nm:.001,mm:1000};
   if (s.unit !== 'px' && next !== 'px') {
     const ratio = toMicrometres[s.unit] / toMicrometres[next];
     for (const key of ['length','unitsPerPixel','referenceLength']) if (s[key] != null) s[key] *= ratio;
-  } else s.unitsPerPixel = null;
+  } else {
+    // A px detour must not turn a 50 µm reference into 50 mm on return.
+    if (s.unit === 'px' && next !== 'px') s.referenceLength *= toMicrometres[s.referenceUnit ?? 'µm'] / toMicrometres[next];
+    if (s.unit !== 'px') s.referenceUnit = s.unit;
+    s.unitsPerPixel = null; active.scaleReference = null; active.autoScaleState = 'idle';
+  }
+  if (next !== 'px') s.referenceUnit = next;
   s.unit = next; calibrationMode = false; sync();
 };
 $('scale-position').onchange = () => { active.scaleBar.position = $('scale-position').value; sync(); };
@@ -587,7 +648,7 @@ canvas.onpointermove=e=>{
 canvas.onpointerup=()=>{
   if(dragging?.mode==='calibration'&&dragging.end){
     const distance=Math.hypot(dragging.end.x-dragging.start.x,dragging.end.y-dragging.start.y);
-    if(distance>=2){try{active.scaleBar.unitsPerPixel=calibrationFromReference(distance,active.scaleBar.referenceLength);calibrationMode=false;status('标尺已标定');}catch(error){status(error.message,true);}}
+    if(distance>=2){try{active.scaleBar.unitsPerPixel=calibrationFromReference(distance,active.scaleBar.referenceLength);active.scaleReference={pixelLength:distance};active.autoScaleState='manual';calibrationMode=false;status('标尺已标定');}catch(error){status(error.message,true);}}
   }
   dragging=null;updatePanMode();sync();
 };
