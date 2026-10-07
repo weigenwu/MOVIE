@@ -1,14 +1,18 @@
 # FrameCut static release
 
-2026-10-07 prepared update (not yet published): optional original timestamp overlay. Select the source label region once, then place its frame-aligned pixels at the top-left or top-right of the cropped export. Includes a small output preview. Oversized labels are reduced proportionally. Existing URLs are unchanged pending the user's publishing decision.
+2026-10-07 release: optional original timestamp overlay. Select the source label region once, then place its frame-aligned pixels at the top-left or top-right of the cropped export. Includes a small output preview. Oversized labels are reduced proportionally.
+
+Stable latest entry: https://raw.githack.com/weigenwu/MOVIE/codex/static-site/index.html
+
+Future updates use this same branch URL. According to https://raw.githack.com/ the branch endpoint refreshes within minutes after a push; high-traffic caching may extend to an hour. Reload an already open editor after the update. Existing commit-pinned `rawcdn.githack.com` links keep their original versions. This free third-party service has no guaranteed uptime or availability on every network.
 
 Validated using this exact WASM engine as a compute library: six AVI/MP4 export cases cover both corners, scaling, nonzero trim starts, disabled overlay, and audio retention. Native FFmpeg independently decoded every output; FFV1 RGB frames matched the expected composite byte-for-byte. Browser UI verification was unavailable in this session.
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/47a4da967fa7ff50debbc1a511f817bdaf4949ce
+Source: https://github.com/weigenwu/MOVIE/tree/134d1f900077efae33e0a03b64989a79bfbb68a2
 
-This branch has no GitHub Actions workflow. It can be served by any HTTPS static host, or through raw.githack.com using an immutable commit URL.
+This branch has no GitHub Actions workflow. It can be served by any HTTPS static host. Publish by pushing this branch, then check the fixed entry and its resources; use commit-pinned CDN URLs only for archived releases.
 
 Third-party components: @ffmpeg/ffmpeg 0.12.15 (MIT) and @ffmpeg/core 0.12.10 (GPL-2.0-or-later). Source and build instructions: https://github.com/ffmpegwasm/ffmpeg.wasm and https://www.npmjs.com/package/@ffmpeg/core/v/0.12.10 .
 
