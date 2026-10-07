@@ -1,5 +1,9 @@
 # FrameCut static release
 
+2026-10-07 follow-up: timestamps are enabled for each new video by default; a missing source region blocks export with an explicit message. Timestamp controls, calibrated scale-bar controls and the shared output preview are now together beside Export. Paused seeks refresh the preview. Output names include `_time` / `_scale` for the selected annotations.
+
+Scale bars support user-defined length, µm/nm/mm/px units and four corners. Physical units require an explicit per-source-pixel calibration or measuring a known reference bar. The measured scale survives crop and view zoom. Invalid, oversized or overlapping annotations block export rather than silently shortening a scientific scale. Preview and export use the same Canvas-generated PNG. Six combined WASM export cases passed independent native decoding: frame-aligned timestamps, exact 100px bars on every frame, lossless RGB equality, small crops, unit conversion and retained source audio. Browser UI interaction remains unverified because no browser was available.
+
 2026-10-07 release: optional original timestamp overlay. Select the source label region once, then place its frame-aligned pixels at the top-left or top-right of the cropped export. Includes a small output preview. Oversized labels are reduced proportionally.
 
 Stable latest entry: https://raw.githack.com/weigenwu/MOVIE/codex/static-site/index.html
@@ -10,9 +14,9 @@ Validated using this exact WASM engine as a compute library: six AVI/MP4 export 
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/134d1f900077efae33e0a03b64989a79bfbb68a2
+Source: https://github.com/weigenwu/MOVIE/tree/6d3bdf7732acc3cc6f388dcee665c32d424b856b
 
-This branch has no GitHub Actions workflow. It can be served by any HTTPS static host. Publish by pushing this branch, then check the fixed entry and its resources; use commit-pinned CDN URLs only for archived releases.
+This branch has no GitHub Actions workflow. The fixed HTML entry pins its stylesheet, FFmpeg wrapper and app module to the same immutable asset commit on raw.githack.com. Their relative imports and workers stay on that revision, so an older cached entry cannot mix with newer scripts. For each update: synchronize and commit the runtime files first; then set the three HTML asset URLs to that commit and push the branch. Verify the fixed entry and all pinned resources. Keep user bookmarks unchanged. For deployment on another static host, use the source HTML's relative asset paths.
 
 Third-party components: @ffmpeg/ffmpeg 0.12.15 (MIT) and @ffmpeg/core 0.12.10 (GPL-2.0-or-later). Source and build instructions: https://github.com/ffmpegwasm/ffmpeg.wasm and https://www.npmjs.com/package/@ffmpeg/core/v/0.12.10 .
 
