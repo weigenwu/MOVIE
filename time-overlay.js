@@ -1,17 +1,23 @@
 // Copy the original burned-in timestamp from the same decoded frame.
 // Do not infer experiment time from playback seconds or OCR the label.
 export function timeRegionError(region, meta) {
-  if (!region) return '请先选择原时间；不需要时取消勾选。';
+  if (!region) return '尚未定位右上角时间，请换一帧后点“重新识别”；无时间的视频可取消勾选。';
   const {x,y,w,h} = region;
   if (![x,y,w,h].every(Number.isInteger) || x < 0 || y < 0 || w < 2 || h < 2 ||
-      (meta && (x+w > meta.width || y+h > meta.height))) return '时间区域超出原视频，请重新选择。';
+      (meta && (x+w > meta.width || y+h > meta.height))) return '时间区域无效，请重新识别。';
   // A large scene rectangle must never silently become a timestamp overlay.
-  // This is only a shape guard; the user verifies the original pixels in the picker.
-  if (w < 3*h || (meta && h > meta.height/4)) return '时间区域应是横向的一小条，请只框时间文字。';
+  // The detector must supply a compact strip; source pixels remain visible in preview.
+  if (w < 3*h || (meta && h > meta.height/4)) return '定位结果不是时间条，请重新识别。';
   return '';
 }
 
 export function timeOverlayLayout(crop, region, position = 'top-right') {
+  // If the original upper-right label survives the crop, copy in place instead
+  // of drawing a slightly shifted second copy over its existing characters.
+  if (position === 'top-right' && region.x >= crop.x && region.y >= crop.y &&
+      region.x + region.w <= crop.x + crop.w && region.y + region.h <= crop.y + crop.h) {
+    return { x:region.x-crop.x, y:region.y-crop.y, w:region.w, h:region.h };
+  }
   const margin = Math.min(8, Math.floor(Math.min(crop.w, crop.h) * .02));
   const scale = Math.min(1, (crop.w - 2 * margin) / region.w, (crop.h - 2 * margin) / region.h);
   const w = Math.max(1, Math.floor(region.w * scale));

@@ -5,10 +5,10 @@
   <title>FrameCut · 视频裁剪</title>
   <meta name="description" content="在浏览器中导入 AVI 和 MP4，自由裁剪画面、截取时间并导出。视频只在你的设备上处理。">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237d6bff'/%3E%3Cpath d='M10 5v17h17M5 10h17v17' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="https://raw.githack.com/weigenwu/MOVIE/1cd56980fee97ac3c32e1020729d8643ffc9ecb4/style.css">
-  <script src="https://raw.githack.com/weigenwu/MOVIE/1cd56980fee97ac3c32e1020729d8643ffc9ecb4/vendor/ffmpeg.js" defer></script><script src="https://raw.githack.com/weigenwu/MOVIE/1cd56980fee97ac3c32e1020729d8643ffc9ecb4/app.js" type="module"></script>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./vendor/ffmpeg.js" defer></script><script src="./app.js" type="module"></script>
 </head>
-<body data-release="2026-10-07-time-picker">
+<body data-release="2026-10-07-auto-time">
 <header class="topbar"><a class="brand" href="./"><span class="brand-mark">⌗</span> FrameCut</a><span class="local-note" title="视频不上传，原文件不变">本地处理</span><button class="text-button" id="help-button">帮助</button></header>
 <main class="workspace">
   <aside class="library">
@@ -46,9 +46,9 @@
       <div class="annotation-controls">
         <label class="check"><input id="keep-time" type="checkbox"> 保留原时间</label>
         <div id="time-options" hidden>
-          <div class="two-columns"><label>时间位置<select id="time-position"><option value="top-right">右上角</option><option value="top-left">左上角</option></select></label><button id="select-time" class="button compact" aria-haspopup="dialog">选择时间文字</button></div>
+          <div class="two-columns"><label>时间位置<select id="time-position"><option value="top-right">右上角</option><option value="top-left">左上角</option></select></label><button id="detect-time" class="button compact">重新识别</button></div>
           <p class="help" id="time-hint"></p>
-          <canvas id="time-source-preview" aria-label="所选原时间文字" hidden></canvas>
+          <canvas id="time-source-preview" aria-label="自动定位的原时间文字" hidden></canvas>
         </div>
         <label class="check"><input id="keep-scale" type="checkbox"> 添加标尺</label>
         <div id="scale-options" hidden>
@@ -63,11 +63,5 @@
 <label class="stack">格式<select id="format"><option value="mp4">MP4</option><option value="avi">AVI · 无损</option></select></label><label id="quality-label" class="stack">画质<select id="quality"><option value="18">高</option><option value="23">标准</option><option value="15">更高</option></select></label><label class="check"><input id="audio" type="checkbox" checked> 保留原声</label><div class="save-location"><span class="save-location-title">保存位置</span><p id="output-folder" role="status">读取中…</p><button id="choose-output" class="button compact" disabled>选择文件夹</button><button id="grant-output" class="button compact" hidden>允许访问文件夹</button><button id="clear-output" class="text-button" hidden>改用普通下载</button><small id="folder-note"></small></div><div class="export-summary"><span>尺寸<strong id="output-size">—</strong></span><span>时长<strong id="output-duration">—</strong></span></div><p id="annotation-status" class="help" role="status"></p><p id="annotation-error" class="help error" role="status"></p><button id="export" class="button primary export-button">导出视频 <span>↗</span></button><p id="export-note" class="help"></p></section>
   </fieldset><div id="result" role="status" aria-live="polite" hidden><strong id="result-title">导出完成</strong><p id="result-info"></p><button id="save-again" class="button success" hidden>重试保存</button><a id="download" class="button success" download>下载视频</a><small id="result-note"></small></div></aside>
 </main>
-<dialog id="time-picker" aria-labelledby="time-picker-title">
-  <h2 id="time-picker-title">选择原时间文字</h2>
-  <p>只圈住原视频中的时间数字；确认下方预览后使用。</p>
-  <canvas id="time-picker-canvas" aria-label="在原视频帧上拖框选择时间文字"></canvas>
-  <div class="time-picker-bottom"><div><span class="preview-title">将保留的时间</span><canvas id="time-picker-preview" aria-label="待确认的原时间文字" hidden></canvas><p id="time-picker-error" role="status"></p></div><div class="time-picker-actions"><button id="time-picker-cancel" class="button">取消</button><button id="time-picker-confirm" class="button primary" disabled>使用这段时间</button></div></div>
-</dialog>
-<dialog id="help"><h2>帮助</h2><ol><li>按住鼠标一拉即可框选，再拉可重画。四角可微调；移动选区时开启“移动选框”。</li><li>滚轮缩放；按住空格或开启“拖动画面”移动视野。</li><li>默认保留原时间：点击“选择时间文字”，在独立窗口只圈住原时间数字，核对时间条预览并点“使用这段时间”。主画面始终用于裁剪视野。复制的是每一帧的原始标记，可放左上或右上；不按播放秒数生成时间。</li><li>勾选“添加标尺”，输入长度、单位和每像素标定值；也可填写原标尺的真实长度，再沿原标尺两端拖线标定。裁剪与显示缩放不会改变标定，切换视频需分别设置。</li><li>在导出预览中核对时间和标尺后导出。文件名带 _time / _scale，便于区分旧结果。</li><li>选择文件夹可连续保存；同名文件自动编号。</li></ol><p>视频不上传，原文件不变。单个文件须小于 2 GiB。部分 AVI 播放前需生成预览；AVI 导出为 FFV1 无损格式。</p><button class="button primary" id="close-help">关闭</button></dialog>
+<dialog id="help"><h2>帮助</h2><ol><li>按住鼠标一拉即可框选，再拉可重画。四角可微调；移动选区时开启“移动选框”。</li><li>滚轮缩放；按住空格或开启“拖动画面”移动视野。</li><li>自动保留原视频右上角的时间，可放在裁剪结果左上或右上。按原始格式逐帧变化；未找到时可换一帧再点“重新识别”。</li><li>勾选“添加标尺”，输入长度、单位和每像素标定值；也可填写原标尺的真实长度，再沿原标尺两端拖线标定。裁剪与显示缩放不会改变标定，切换视频需分别设置。</li><li>在导出预览中核对时间和标尺后导出。文件名带 _time / _scale，便于区分旧结果。</li><li>选择文件夹可连续保存；同名文件自动编号。</li></ol><p>视频不上传，原文件不变。单个文件须小于 2 GiB。部分 AVI 播放前需生成预览；AVI 导出为 FFV1 无损格式。</p><button class="button primary" id="close-help">关闭</button></dialog>
 </body></html>

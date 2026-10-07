@@ -1,11 +1,10 @@
 import { openRawAVI } from './raw-avi.js';
 import { folderSetting, writeToFolder, sharedHosting } from './save-location.js';
 import { timeOverlayLayout, videoFilterArgs, timeRegionError } from './time-overlay.js';
-import { createTimePicker } from './time-picker.js';
+import { detectTimeRegion } from './auto-time-region.js';
 import { scaleBarLayout, drawScaleBar, calibrationFromReference } from './scale-bar.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
-const pickTime = createTimePicker({dialog:$('time-picker'),canvas:$('time-picker-canvas'),preview:$('time-picker-preview'),error:$('time-picker-error'),confirm:$('time-picker-confirm'),cancel:$('time-picker-cancel')});
 const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
@@ -111,7 +110,7 @@ async function probe(item) {
   if (!(duration > 0 && Number.isFinite(duration) && width >= 2 && height >= 2)) throw new Error('视频时长或尺寸无效');
   item.meta = { width, height, duration, fps, audio: data.streams.some(s => s.codec_type === 'audio'), codec: stream.codec_name };
   item.crop = { x:0, y:0, w:even(width), h:even(height) }; item.start = 0; item.end = duration; item.current = 0; item.aspect = 'free';
-  item.timeOverlay = { enabled:true, position:'top-right' }; item.timeRegion = null;
+  item.timeOverlay = { enabled:true, position:'top-right' }; item.timeRegion = null; item.autoTimeState = 'idle';
   item.scaleBar = { enabled:false, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, position:'bottom-right' };
 }
 function renderFiles() {
@@ -205,13 +204,16 @@ async function selectFile(item) {
       item.nativeURL ||= URL.createObjectURL(item.file);
       item.native = await nativeVideo(item.nativeURL); checkCancelled();
     }
-    if (item.native) { clipOffset = 0; showVideo(); video.currentTime = item.current; }
+    if (item.native) { clipOffset = 0; showVideo(); }
     else {
       item.native = false;
       try { await frameAt(item.current); }
       catch (error) { if (!item.raw) throw error; item.raw = null; await frameAt(item.current); }
     }
     status('');
+    // Inspect the loaded frame before a seek can temporarily make it unavailable.
+    if (item.timeOverlay.enabled && !item.timeRegion) await detectOriginalTime(item);
+    if (item.native && video.currentTime !== item.current) video.currentTime = item.current;
     renderFiles();
   });
 }
@@ -303,15 +305,15 @@ function annotationError() {
 }
 function annotationSummary() {
   if (!active?.meta) return '';
-  return `原时间：${active.timeOverlay.enabled ? active.timeRegion ? '已加入' : '待框选' : '关闭'} · 标尺：${active.scaleBar.enabled ? `${active.scaleBar.length} ${active.scaleBar.unit}` : '关闭'}`;
+  return `原时间：${active.timeOverlay.enabled ? active.timeRegion ? '自动保留' : '待定位' : '关闭'} · 标尺：${active.scaleBar.enabled ? `${active.scaleBar.length} ${active.scaleBar.unit}` : '关闭'}`;
 }
 function syncTimeOverlay() {
   const t = active.timeOverlay;
   $('keep-time').checked = t.enabled;
   $('time-options').hidden = !t.enabled;
   $('time-position').value = t.position;
-  $('select-time').textContent = active.timeRegion ? '重选时间文字' : '选择时间文字';
-  $('time-hint').textContent = active.timeRegion ? '核对下方是否为原时间文字。' : '在独立窗口中选择原时间文字。';
+  $('detect-time').textContent = '重新识别';
+  $('time-hint').textContent = active.timeRegion ? active.autoTimeState === 'missing' ? '未能重新定位，沿用上次时间条。' : '已自动保留右上角原时间。' : active.autoTimeState === 'missing' ? '未找到时间条，请换一帧后重新识别。' : '读取画面后自动保留右上角时间。';
   $('time-source-preview').hidden = !t.enabled || !!timeRegionError(active.timeRegion,active.meta);
   const s = active.scaleBar;
   $('keep-scale').checked = s.enabled; $('scale-options').hidden = !s.enabled;
@@ -360,20 +362,29 @@ function drawTimePreview() {
   }
   try { const patch = scalePatch(); if (patch) { const p = patch.layout; pc.drawImage(patch.canvas,p.x/c.w*preview.width,p.y/c.h*preview.height,p.width/c.w*preview.width,p.height/c.h*preview.height); } } catch { /* Invalid calibration is shown beside Export. */ }
 }
-async function selectTimeRegion() {
-  if (busy || !active?.meta) return;
-  stopPlayback(); cancelSelection(); calibrationMode = false; updatePanMode(); sync();
-  const item = active;
+async function detectOriginalTime(item, force = false) {
+  if (!item?.meta || item !== active || !item.timeOverlay.enabled || (item.timeRegion && !force)) return false;
+  const source = video.hidden ? $('frame') : video;
+  const expectedURL = source === video ? (item.native ? item.nativeURL : item.proxy?.url) : item.frameURL;
+  const ownsSource = () => active === item && expectedURL && (source === video ? source.currentSrc || source.src : source.src) === expectedURL;
   try {
-    const region = await pickTime({source:video.hidden ? $('frame') : video,meta:item.meta,region:item.timeRegion});
-    if (active !== item || !region) return;
-    const error = timeRegionError(region,item.meta); if (error) { status(error,true); return; }
-    item.timeRegion = {...region}; item.timeOverlay.enabled = true;
-    status('原时间已选定，请核对导出预览。'); sync();
-  } catch (error) { status(error.message,true); }
+    if (!ownsSource()) return false;
+    if (source !== video) await source.decode();
+    if (!ownsSource() || (source === video && source.readyState < 2)) return false;
+    const sw = source === video ? source.videoWidth : source.naturalWidth, sh = source === video ? source.videoHeight : source.naturalHeight;
+    if (!sw || !sh) return false;
+    const sample = document.createElement('canvas'), ratio = Math.min(1,1600/sw);
+    sample.width = Math.max(1,Math.round(sw*ratio)); sample.height = Math.max(1,Math.round(sh*ratio));
+    const paint = sample.getContext('2d',{willReadFrequently:true}); paint.drawImage(source,0,0,sample.width,sample.height);
+    const region = detectTimeRegion(paint.getImageData(0,0,sample.width,sample.height),item.meta);
+    sample.width = sample.height = 0;
+    if (!ownsSource()) return false;
+    if (!region || timeRegionError(region,item.meta)) { item.autoTimeState = 'missing'; sync(); return false; }
+    item.timeRegion = region; item.autoTimeState = 'found'; sync(); return true;
+  } catch { if (active === item) { item.autoTimeState = 'missing'; sync(); } return false; }
 }
-$('keep-time').onchange = () => { active.timeOverlay.enabled = $('keep-time').checked; sync(); };
-$('select-time').onclick = selectTimeRegion;
+$('keep-time').onchange = async () => { active.timeOverlay.enabled = $('keep-time').checked; sync(); if(active.timeOverlay.enabled&&!active.timeRegion)await task('正在定位原时间…',()=>detectOriginalTime(active)); };
+$('detect-time').onclick = () => task('正在定位原时间…',()=>detectOriginalTime(active,true));
 $('time-position').onchange = () => { active.timeOverlay.position = $('time-position').value; sync(); };
 $('frame').addEventListener('load', drawTimePreview);
 video.addEventListener('loadeddata', drawTimePreview);
