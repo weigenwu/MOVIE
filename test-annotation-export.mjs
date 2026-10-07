@@ -17,17 +17,22 @@ const realHandlers = [
   section('async function probe(item)', 'function renderFiles()'),
   section('async function selectFile(item)', 'function showVideo()'),
   section('function annotationError()', 'function syncTimeOverlay()'),
-  section('async function selectTimeRegion()', "$('time-position').onchange"),
+  section('async function detectOriginalTime(', "$('time-position').onchange"),
   section('function scalePatch()', 'function drawTimePreview()'),
+  section('function drawTimePreview()', 'async function detectOriginalTime('),
   section('async function exportVideo()', "$('export').onclick=exportVideo;")
 ].join('\n');
 const json = value => JSON.parse(JSON.stringify(value));
 function harness() {
-  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, picks:[], pickResult:null };
+  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, detections:[], detected:null, decodes:0 };
+  const drawCalls=[];
+  const paintFor = owner => ({...Object.fromEntries(['save','restore','clearRect','fillRect','fillText','drawImage'].map(name => [name,(...args)=>drawCalls.push([name,...args,owner])])),
+    getImageData(_x,_y,width,height){return {width,height,data:new Uint8ClampedArray(width*height*4)};}});
   const $ = id => {
     if (!elements.has(id)) elements.set(id, {
       value: id === 'format' ? 'avi' : id === 'quality' ? '18' : '',
       checked: id === 'audio', hidden:false, style:{ setProperty(){} },
+      src:'',naturalWidth:640,naturalHeight:480,async decode(){calls.decodes++;},getContext(){return paintFor(id);},
       onclick(){}, onchange(){}, setAttribute(){},
       click(){ calls.downloads++; }
     });
@@ -37,17 +42,15 @@ function harness() {
     { codec_type:'video', codec_name:'rawvideo', width:640, height:480, avg_frame_rate:'4/1', duration:'3' },
     { codec_type:'audio' }
   ] };
-  const drawCalls = [];
-  const paint = Object.fromEntries(['save','restore','clearRect','fillRect','fillText'].map(name => [name,(...args)=>drawCalls.push([name,...args])]));
   const context = {
-    $, active:null, busy:false, locationBusy:false, locationReady:true, video:{pause(){},hidden:false},canvas:{hidden:false},
+    $, active:null, busy:false, locationBusy:false, locationReady:true, video:{pause(){},hidden:false,src:'',currentSrc:'',videoWidth:640,videoHeight:480,readyState:3},canvas:{hidden:false},
     resultURL:null, outputFolder:null, dragging:null, spacePan:false, panMode:false, moveMode:false,
     calibrationMode:false, previewEpoch:0, timeOverlayLayout, timeRegionError, videoFilterArgs,
     scaleBarLayout, drawScaleBar, Blob,
     URL:{createObjectURL:()=> 'blob:test-result',revokeObjectURL(){}},
     document:{ createElement(type) {
       assert.equal(type,'canvas');
-      return {getContext:()=>paint,toBlob(callback,type){ assert.equal(type,'image/png'); callback(new Blob([new Uint8Array([137,80,78,71])],{type})); }};
+      return {getContext:()=>paintFor('scratch'),toBlob(callback,type){ assert.equal(type,'image/png'); callback(new Blob([new Uint8Array([137,80,78,71])],{type})); }};
     } },
     engine:{
       async ffprobe(){ calls.probes++; return 0; },
@@ -60,8 +63,9 @@ function harness() {
     removeTemp:async path=>calls.removed.push(path),
     ensureOutputAccess:async()=>true,
     status:(...args)=>calls.status.push(args),
-    nativeVideo:async()=>true,openRawAVI:async()=>({frames:12}),frameAt:async()=>{},showVideo(){},
-    pickTime:async options=>{calls.picks.push(options);return calls.pickResult;},
+    nativeVideo:async url=>{context.video.src=context.video.currentSrc=url;context.video.readyState=3;return true;},openRawAVI:async()=>({frames:12}),
+    frameAt:async()=>{context.active.frameURL=`blob:frame-${context.active.id}`;$('frame').src=context.active.frameURL;context.video.hidden=true;},showVideo(){context.video.hidden=false;},
+    detectTimeRegion:(image,meta)=>{calls.detections.push({image,meta});return calls.detectFn ? calls.detectFn(image,meta) : calls.detected;},
     stopPlayback(){},cancelSelection(){context.dragging=null;},
     checkCancelled(){},updatePanMode(){},renderFiles(){},resize(){},sync(){},progress(){},outputLocation(){},
     even:n=>Math.floor(n/2)*2,humanSize:()=> 'test size'
@@ -85,62 +89,113 @@ function harness() {
   assert.equal(item.timeRegion,null);
   await h.context.exportVideo();
   assert.equal(h.calls.exports.length,0);
-  assert.match(h.calls.status.at(-1)[0],/选择原时间/);
-  assert.match(h.context.annotationSummary(),/待选择|待框选/);
+  assert.equal(item.autoTimeState,'missing');
+  assert.equal(h.calls.detections.length,1,'Import automatically tries to locate source time');
+  assert.match(h.calls.status.at(-1)[0],/尚未定位/);
+  assert.match(h.context.annotationSummary(),/待定位/);
 }
 
-// Enabling preservation never arms the main crop canvas. Opening the picker is
-// an explicit action, and only its validated confirmation commits source pixels.
+// Enabling preservation locates the source label without asking the user to draw.
+// Detection and retries cannot alter the scientific crop or current zoom.
 {
   const h=harness(),item=await h.choose();
   const crop=json(item.crop),view=json(item.view);
   for(const enabled of [false,true]){
-    h.$('keep-time').checked=enabled;h.$('keep-time').onchange();
+    h.$('keep-time').checked=enabled;await h.$('keep-time').onchange();
     assert.equal(item.timeOverlay.enabled,enabled);
-    assert.equal(h.calls.picks.length,0,'Checkbox must not start timestamp selection');
     assert.deepEqual(json(item.crop),crop);
     assert.deepEqual(json(item.view),view);
     assert.equal(item.timeRegion,null);
   }
   const selected={x:440,y:8,w:192,h:28};
-  h.calls.pickResult=selected;h.context.video.hidden=true;
-  await h.$('select-time').onclick();
-  assert.equal(h.calls.picks.length,1);
-  assert.equal(h.calls.picks[0].source,h.$('frame'),'AVI picker must use its visible decoded frame');
-  assert.equal(h.calls.picks[0].meta,item.meta);
+  h.calls.detected=selected;
+  await h.$('detect-time').onclick();
   assert.deepEqual(json(item.timeRegion),selected);
-  assert.notEqual(item.timeRegion,selected,'Committed region must not retain mutable picker state');
+  assert.equal(item.autoTimeState,'found');
+  assert.equal(h.calls.detections.at(-1).meta,item.meta);
+  assert(h.calls.decodes>0,'AVI page frame must be decoded before pixel sampling');
   assert.equal(item.timeOverlay.enabled,true);
   assert.deepEqual(json(item.crop),crop);
-  assert.deepEqual(json(item.view),view,'Picking time must not reset the scientific viewing zoom');
-  h.calls.pickResult=null;
-  await h.context.selectTimeRegion();
-  assert.deepEqual(json(item.timeRegion),selected,'Cancel must preserve the previous confirmed strip');
+  assert.deepEqual(json(item.view),view,'Auto detection must not reset the scientific viewing zoom');
+  const attempts=h.calls.detections.length;
+  await h.context.detectOriginalTime(item);
+  assert.equal(h.calls.detections.length,attempts,'Existing original region is reused without scanning every redraw');
+  h.calls.detected=null;
+  await h.$('detect-time').onclick();
+  assert.deepEqual(json(item.timeRegion),selected,'Failed retry preserves the previously found original strip');
   for(const bad of [{x:100,y:100,w:500,h:350},{x:600,y:8,w:192,h:28}]){
-    h.calls.pickResult=bad;
-    await h.context.selectTimeRegion();
-    assert.deepEqual(json(item.timeRegion),selected,'Invalid picker result must never replace the time strip');
-    assert.equal(h.calls.status.at(-1)[1],true);
+    h.calls.detected=bad;
+    await h.$('detect-time').onclick();
+    assert.deepEqual(json(item.timeRegion),selected,'Invalid detector result must never replace the time strip');
   }
-  h.context.video.hidden=false;h.calls.pickResult=selected;
-  await h.context.selectTimeRegion();
-  assert.equal(h.calls.picks.at(-1).source,h.context.video,'Native MP4 picker must use the visible video');
-  h.context.pickTime=async()=>{throw new Error('Frame not ready');};
-  await h.context.selectTimeRegion();
-  assert.deepEqual(h.calls.status.at(-1),['Frame not ready',true]);
-  assert.deepEqual(json(item.timeRegion),selected,'Decode/picker failure preserves the confirmed region');
+  h.$('frame').decode=async()=>{throw new Error('Frame not ready');};
+  assert.equal(await h.context.detectOriginalTime(item,true),false);
+  assert.deepEqual(json(item.timeRegion),selected,'Decode failure preserves the previously found region');
 }
 
-// Switching files while a picker is unresolved cannot copy its result onto the
-// newly active video, nor mutate the old file after the user leaves it.
+// Successful imports automatically locate both AVI and native MP4 labels. The
+// preview and export copy source pixels, with no generated clock or text drawing.
+for(const ext of ['avi','mp4']){
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  const item=await h.choose(ext);
+  assert.deepEqual(json(item.timeRegion),h.calls.detected);
+  const sourceImage=ext==='avi'?h.$('frame'):h.context.video;
+  assert(h.drawCalls.some(call=>call[0]==='drawImage'&&call[1]===sourceImage&&call.at(-1)==='scratch'));
+  h.drawCalls.length=0;h.context.drawTimePreview();
+  const copies=h.drawCalls.filter(call=>call[0]==='drawImage'&&call.at(-1)==='time-preview');
+  assert.equal(copies.length,2,'Preview draws the cropped field and one original timestamp strip');
+  assert.deepEqual(copies[1].slice(2,6),[440,8,192,28]);
+  assert(!h.drawCalls.some(call=>call[0]==='fillText'),'Original timestamp must not be regenerated from playback time');
+}
+
+// Starting a native seek can immediately lower readyState. Detection must use
+// the loaded frame first, and a later return must retain the located source strip.
+{
+  const h=harness();h.calls.detected={x:440,y:8,w:192,h:28};
+  const seekStates=[];
+  Object.defineProperty(h.context.video,'currentTime',{set(value){
+    seekStates.push({value,region:json(h.context.active.timeRegion),detections:h.calls.detections.length});
+    h.context.video.readyState=1;
+  }});
+  const item=await h.choose('mp4');
+  assert.deepEqual(json(item.timeRegion),h.calls.detected,'Detection must complete before a seek makes the frame unavailable');
+  assert.deepEqual(seekStates[0].region,h.calls.detected);
+  assert.equal(seekStates[0].detections,1);
+  item.current=1.25;
+  const next=h.makeFile('mp4','next.mp4');await h.context.selectFile(next);
+  const attempts=h.calls.detections.length;
+  await h.context.selectFile(item);
+  assert.equal(h.calls.detections.length,attempts,'Returning to a known native video reuses its region without sampling a seeking frame');
+  assert.deepEqual(json(item.timeRegion),h.calls.detected);
+  assert.equal(seekStates.at(-1).value,1.25);
+  assert.deepEqual(seekStates.at(-1).region,h.calls.detected);
+}
+
+// Switching files or changing a source URL while decode is unresolved cannot
+// copy an old frame's location onto the newly active video.
 {
   const h=harness(),first=await h.choose();let finish;
-  h.context.pickTime=()=>new Promise(resolve=>{finish=resolve;});
-  const pending=h.context.selectTimeRegion();
+  h.$('frame').decode=()=>new Promise(resolve=>{finish=resolve;});
+  h.calls.detected={x:440,y:8,w:192,h:28};
+  const pending=h.context.detectOriginalTime(first);
   const next=h.makeFile('mp4','next.mp4');await h.context.selectFile(next);
-  finish({x:440,y:8,w:192,h:28});await pending;
+  finish();assert.equal(await pending,false);
   assert.equal(first.timeRegion,null);
-  assert.equal(next.timeRegion,null);
+  assert.deepEqual(json(next.timeRegion),h.calls.detected);
+}
+{
+  const h=harness(),item=await h.choose();let finish;
+  h.$('frame').decode=()=>new Promise(resolve=>{finish=resolve;});
+  h.calls.detected={x:440,y:8,w:192,h:28};
+  const pending=h.context.detectOriginalTime(item);
+  h.$('frame').src='blob:stale-source';finish();
+  assert.equal(await pending,false);assert.equal(item.timeRegion,null);
+}
+{
+  const h=harness(),item=await h.choose('mp4');h.calls.detected={x:440,y:8,w:192,h:28};
+  h.context.video.readyState=1;
+  assert.equal(await h.context.detectOriginalTime(item),false);
+  assert.equal(item.timeRegion,null,'Unloaded video must not commit a detector result');
 }
 
 // A scene rectangle is not a timestamp strip. Reproduce the reported duplicate
@@ -175,7 +230,7 @@ for (const input of ['avi','mp4']) for (const format of ['avi','mp4']) {
   assert.equal(args[args.indexOf('-map')+1],'[withtime]');
   assert.equal(args[args.indexOf('-c:v')+1],format==='avi'?'ffv1':'libx264');
   assert.match(h.$('download').download,new RegExp(`_time\\.${format}$`));
-  assert.match(h.$('result-note').textContent,/原时间：已加入/);
+  assert.match(h.$('result-note').textContent,/原时间：自动保留/);
   assert.equal(h.calls.downloads,1);
 }
 
