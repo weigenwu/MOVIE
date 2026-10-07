@@ -7,7 +7,7 @@ const { calibrationFromReference } = await import(`data:text/javascript;base64,$
 const canvas = { style:{},setPointerCapture(){} };
 const rect = {left:20,top:30,width:640,height:480,right:660,bottom:510};
 const keyHandlers=[],statuses=[];
-const ctx = { canvas, active:{meta:{width:640,height:480},crop:{x:100,y:120,w:320,h:240},timeRegion:null,scaleBar:{unitsPerPixel:null,referenceLength:50},aspect:'1',view:{x:0,y:0}},timestampMode:true,calibrationMode:false,busy:false,panMode:false,spacePan:false,moveMode:false,dragging:null,
+const ctx = { canvas, active:{meta:{width:640,height:480},crop:{x:100,y:120,w:320,h:240},timeOverlay:{enabled:true},timeRegion:{x:440,y:8,w:192,h:28},scaleBar:{unitsPerPixel:null,referenceLength:50},aspect:'free',view:{x:0,y:0}},calibrationMode:false,busy:false,panMode:false,spacePan:false,moveMode:false,dragging:null,
   $:()=>({getBoundingClientRect:()=>rect}),clamp:(v,a,b)=>Math.max(a,Math.min(b,v)),even:v=>Math.floor(v/2)*2,calibrationFromReference,stopPlayback(){},sync(){},updatePanMode(){},resize(){},drawCrop(){},status(...args){statuses.push(args)},
   document:{addEventListener(_type,handler){keyHandlers.push(handler)},querySelector:()=>null} };
 const geometry = source.slice(source.indexOf('function handles('), source.indexOf('for(const key of',source.indexOf('canvas.onpointerdown')));
@@ -17,26 +17,30 @@ const escapeStart=source.indexOf("document.addEventListener('keydown', e => {",s
 runInNewContext(source.slice(escapeStart,source.indexOf('function resize()',escapeStart)),ctx);
 const event=(x,y)=>({clientX:x+20,clientY:y+30,isPrimary:true,button:0,pointerId:1,preventDefault(){}});
 const plain=value=>JSON.parse(JSON.stringify(value));
-const crop=plain(ctx.active.crop);
-canvas.onpointerdown(event(440,8));canvas.onpointermove(event(632,36));canvas.onpointerup();
-assert.deepEqual(plain(ctx.active.timeRegion),{x:440,y:8,w:192,h:28});
-assert.deepEqual(plain(ctx.active.crop),crop,'Time region must not replace scientific field of view');
-assert.equal(ctx.timestampMode,false,'Return to ordinary crop after selecting the label');
+// The main viewer is always a scientific crop selector, even when preserving
+// the source timestamp is enabled. A field must never become an overlay patch.
 const stamp=plain(ctx.active.timeRegion);
+canvas.onpointerdown(event(100,100));canvas.onpointermove(event(600,450));canvas.onpointerup();
+assert.deepEqual(plain(ctx.active.crop),{x:100,y:100,w:500,h:350});
+assert.deepEqual(plain(ctx.active.timeRegion),stamp,'A large field selection must not replace the time strip');
+ctx.active.aspect='1';
 canvas.onpointerdown(event(160,180));canvas.onpointermove(event(260,280));canvas.onpointerup();
 assert.deepEqual(plain(ctx.active.crop),{x:160,y:180,w:100,h:100});
 assert.deepEqual(plain(ctx.active.timeRegion),stamp,'Normal cropping must not move timestamp source');
-ctx.timestampMode=true;
+const crop=plain(ctx.active.crop);
 canvas.onpointerdown(event(460,20));canvas.onpointermove(event(500,28));canvas.onpointercancel();
-assert.deepEqual(plain(ctx.active.timeRegion),stamp,'Cancelled selection must restore original label');
+assert.deepEqual(plain(ctx.active.crop),crop,'Cancelled selection must restore the original field');
+assert.deepEqual(plain(ctx.active.timeRegion),stamp,'Cancelled crop must not touch the original label');
 ctx.active.timeRegion=null;
 canvas.onpointerdown(event(100,100));canvas.onpointerup();
 assert.equal(ctx.active.timeRegion,null,'A click must not create a fake time region');
-assert.equal(ctx.timestampMode,true);
+assert.deepEqual(plain(ctx.active.crop),crop,'A click must not replace the existing crop');
+ctx.active.aspect='free';
 canvas.onpointerdown(event(638,44));canvas.onpointermove(event(434,6));canvas.onpointerup();
-assert.deepEqual(plain(ctx.active.timeRegion),{x:434,y:6,w:204,h:38},'Reverse drag remains free aspect despite square crop setting');
+assert.deepEqual(plain(ctx.active.crop),{x:434,y:6,w:204,h:38},'Reverse drag creates a field crop');
+assert.equal(ctx.active.timeRegion,null,'The main viewer must not create timestamp state');
 const beforeCalibration=plain({crop:ctx.active.crop,timeRegion:ctx.active.timeRegion});
-ctx.calibrationMode=true;ctx.timestampMode=false;
+ctx.calibrationMode=true;
 canvas.onpointerdown(event(20,450));canvas.onpointermove(event(120,450));
 assert.equal(ctx.active.scaleBar.unitsPerPixel,null,'Measurement is not committed before release');
 canvas.onpointerup();
@@ -65,4 +69,4 @@ for(const invalidReference of [0,NaN,null,-1,Infinity]){
   assert(statuses.length>messagesBefore,'Invalid measurement must show an error');
   assert.equal(statuses.at(-1)[1],true);
 }
-console.log('Independent time selection, crop, cancellation, reverse drag and scientific scale measurement checks passed.');
+console.log('Crop-only main viewer, cancellation, reverse drag and scientific scale measurement checks passed.');

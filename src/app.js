@@ -1,14 +1,16 @@
 import { openRawAVI } from './raw-avi.js';
 import { folderSetting, writeToFolder } from './save-location.js';
-import { timeOverlayLayout, videoFilterArgs } from './time-overlay.js';
+import { timeOverlayLayout, videoFilterArgs, timeRegionError } from './time-overlay.js';
+import { createTimePicker } from './time-picker.js';
 import { scaleBarLayout, drawScaleBar, calibrationFromReference } from './scale-bar.js';
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('crop-canvas'), ctx = canvas.getContext('2d');
+const pickTime = createTimePicker({dialog:$('time-picker'),canvas:$('time-picker-canvas'),preview:$('time-picker-preview'),error:$('time-picker-error'),confirm:$('time-picker-confirm'),cancel:$('time-picker-cancel')});
 const files = [];
 let active = null, engine = null, mounted = null, wasmURL = null, busy = false, cancelled = false, fetchAbort = null;
 let dragging = null, clipOffset = 0, processingDuration = 0, previewPlaying = false;
 let previewEpoch = 0, previewTimer = null;
-let panMode = false, spacePan = false, moveMode = false, timestampMode = false, calibrationMode = false;
+let panMode = false, spacePan = false, moveMode = false, calibrationMode = false;
 let logLines = [], resultURL = null;
 let outputFolder = null, outputPermission = 'prompt', locationReady = false, locationBusy = false, savingFile = false, lastExport = null;
 let folderRemembered = true;
@@ -110,7 +112,7 @@ async function probe(item) {
   item.meta = { width, height, duration, fps, audio: data.streams.some(s => s.codec_type === 'audio'), codec: stream.codec_name };
   item.crop = { x:0, y:0, w:even(width), h:even(height) }; item.start = 0; item.end = duration; item.current = 0; item.aspect = 'free';
   item.timeOverlay = { enabled:true, position:'top-right' }; item.timeRegion = null;
-  item.scaleBar = { enabled:false, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, position:'bottom-left' };
+  item.scaleBar = { enabled:false, length:50, unit:'µm', unitsPerPixel:null, referenceLength:50, position:'bottom-right' };
 }
 function renderFiles() {
   $('file-count').textContent = files.length;
@@ -183,7 +185,7 @@ async function selectFile(item) {
   if (active?.meta) active.exportSettings = { format:$('format').value, quality:$('quality').value, audio:$('audio').checked };
   await task('正在读取视频…', async () => {
     if (active?.raw && active !== item) { URL.revokeObjectURL(active.frameURL); active.frameURL = null; active.frameIndex = null; }
-    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; moveMode = false; timestampMode = false; calibrationMode = false; updatePanMode();
+    video.pause(); active = item; dragging = null; spacePan = false; panMode = false; moveMode = false; calibrationMode = false; updatePanMode();
     $('result').hidden = true; $('media-stage').hidden = true; canvas.hidden = true; $('crop-badge').hidden = true; $('empty-state').hidden = true; renderFiles();
     $('active-name').textContent = item.file.name;
     $('active-name').title = item.path;
@@ -284,12 +286,12 @@ function sync() {
   $('clock').innerHTML = `${time(current)} <span>/ ${time(meta.duration)}</span>`;
   $('selection-duration').textContent = `保留 ${(end-start).toFixed(3)} 秒`;
   $('output-size').textContent = `${crop.w} × ${crop.h}`; $('output-duration').textContent = `${(end-start).toFixed(3)} 秒`;
-  $('crop-badge').textContent = calibrationMode ? '沿原标尺两端拖线 · Esc 取消' : timestampMode ? '框选原时间 · Esc 取消' : `${crop.w} × ${crop.h}`;
+  $('crop-badge').textContent = calibrationMode ? '沿原标尺两端拖线 · Esc 取消' : `${crop.w} × ${crop.h}`;
   syncTimeOverlay(); drawCrop();
 }
 function annotationError() {
   if (!active?.meta) return '';
-  if (active.timeOverlay.enabled && !active.timeRegion) return '请先框选原时间；不需要时取消勾选。';
+  if (active.timeOverlay.enabled) { const error = timeRegionError(active.timeRegion,active.meta); if (error) return error; }
   try {
     const s = scaleBarLayout(active.crop, active.scaleBar);
     if (s && active.timeOverlay.enabled && active.timeRegion) {
@@ -308,9 +310,9 @@ function syncTimeOverlay() {
   $('keep-time').checked = t.enabled;
   $('time-options').hidden = !t.enabled;
   $('time-position').value = t.position;
-  $('select-time').textContent = timestampMode ? '取消框选' : active.timeRegion ? '重选时间区域' : '框选时间区域';
-  $('select-time').setAttribute('aria-pressed', String(timestampMode));
-  $('time-hint').textContent = timestampMode ? '拖框圈住原视频的时间文字。' : active.timeRegion ? '' : '先框选原视频中的时间标记。';
+  $('select-time').textContent = active.timeRegion ? '重选时间文字' : '选择时间文字';
+  $('time-hint').textContent = active.timeRegion ? '核对下方是否为原时间文字。' : '在独立窗口中选择原时间文字。';
+  $('time-source-preview').hidden = !t.enabled || !!timeRegionError(active.timeRegion,active.meta);
   const s = active.scaleBar;
   $('keep-scale').checked = s.enabled; $('scale-options').hidden = !s.enabled;
   for (const [id,key] of [['scale-length','length'],['scale-unit','unit'],['scale-calibration','unitsPerPixel'],['scale-reference','referenceLength'],['scale-position','position']]) $(id).value = s[key] ?? '';
@@ -348,19 +350,30 @@ function drawTimePreview() {
   const pc = preview.getContext('2d'); pc.imageSmoothingEnabled = false;
   const sx = sw / active.meta.width, sy = sh / active.meta.height;
   pc.drawImage(source, c.x*sx, c.y*sy, c.w*sx, c.h*sy, 0, 0, preview.width, preview.height);
-  if (active.timeOverlay.enabled && r) {
+  if (active.timeOverlay.enabled && !timeRegionError(r,active.meta)) {
+    const strip = $('time-source-preview'), stripScale = Math.min(2,440/r.w,88/r.h);
+    strip.width = Math.max(1,Math.round(r.w*stripScale)); strip.height = Math.max(1,Math.round(r.h*stripScale));
+    const sc = strip.getContext('2d'); sc.imageSmoothingEnabled = false;
+    sc.drawImage(source,r.x*sx,r.y*sy,r.w*sx,r.h*sy,0,0,strip.width,strip.height);
     const p = timeOverlayLayout(c, r, active.timeOverlay.position);
     pc.drawImage(source, r.x*sx, r.y*sy, r.w*sx, r.h*sy, p.x/c.w*preview.width, p.y/c.h*preview.height, p.w/c.w*preview.width, p.h/c.h*preview.height);
   }
   try { const patch = scalePatch(); if (patch) { const p = patch.layout; pc.drawImage(patch.canvas,p.x/c.w*preview.width,p.y/c.h*preview.height,p.width/c.w*preview.width,p.height/c.h*preview.height); } } catch { /* Invalid calibration is shown beside Export. */ }
 }
-function selectTimeRegion(enabled) {
-  stopPlayback(); dragging = null; timestampMode = enabled; calibrationMode = false;
-  if (enabled) { moveMode = false; panMode = false; active.view = { zoom:1, x:0, y:0 }; resize(); }
-  updatePanMode(); sync();
+async function selectTimeRegion() {
+  if (busy || !active?.meta) return;
+  stopPlayback(); cancelSelection(); calibrationMode = false; updatePanMode(); sync();
+  const item = active;
+  try {
+    const region = await pickTime({source:video.hidden ? $('frame') : video,meta:item.meta,region:item.timeRegion});
+    if (active !== item || !region) return;
+    const error = timeRegionError(region,item.meta); if (error) { status(error,true); return; }
+    item.timeRegion = {...region}; item.timeOverlay.enabled = true;
+    status('原时间已选定，请核对导出预览。'); sync();
+  } catch (error) { status(error.message,true); }
 }
-$('keep-time').onchange = () => { active.timeOverlay.enabled = $('keep-time').checked; selectTimeRegion(active.timeOverlay.enabled && !active.timeRegion); };
-$('select-time').onclick = () => selectTimeRegion(!timestampMode);
+$('keep-time').onchange = () => { active.timeOverlay.enabled = $('keep-time').checked; sync(); };
+$('select-time').onclick = selectTimeRegion;
 $('time-position').onchange = () => { active.timeOverlay.position = $('time-position').value; sync(); };
 $('frame').addEventListener('load', drawTimePreview);
 video.addEventListener('loadeddata', drawTimePreview);
@@ -378,7 +391,7 @@ $('scale-unit').onchange = () => {
 $('scale-position').onchange = () => { active.scaleBar.position = $('scale-position').value; sync(); };
 $('measure-scale').onclick = () => {
   if (!(active.scaleBar.referenceLength > 0)) { status('请填写原标尺标注的实际长度。',true); return; }
-  stopPlayback(); dragging = null; calibrationMode = !calibrationMode; timestampMode = false; moveMode = false; panMode = false;
+  stopPlayback(); dragging = null; calibrationMode = !calibrationMode; moveMode = false; panMode = false;
   if (calibrationMode) { active.view = {zoom:1,x:0,y:0}; resize(); }
   updatePanMode(); sync();
 };
@@ -395,8 +408,8 @@ function expandWorkspace(expanded) {
 }
 $('expand-workspace').onclick = () => expandWorkspace($('expand-workspace').getAttribute('aria-expanded') !== 'true');
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && (dragging || moveMode || panMode || timestampMode || calibrationMode) && !document.querySelector('dialog[open]')) {
-    cancelSelection(); timestampMode = false; calibrationMode = false; moveMode = false; panMode = false; updatePanMode(); sync(); return;
+  if (e.key === 'Escape' && (dragging || moveMode || panMode || calibrationMode) && !document.querySelector('dialog[open]')) {
+    cancelSelection(); calibrationMode = false; moveMode = false; panMode = false; updatePanMode(); sync(); return;
   }
   if (e.key === 'Escape' && $('expand-workspace').getAttribute('aria-expanded') === 'true' && !document.querySelector('dialog[open]')) {
     expandWorkspace(false); $('expand-workspace').focus();
@@ -434,7 +447,7 @@ function updatePanMode() {
   canvas.classList.toggle('pan-ready', panMode || spacePan);
   canvas.classList.toggle('panning', dragging?.mode === 'pan');
 }
-$('move-mode').onclick = () => { stopPlayback(); dragging = null; timestampMode = false; calibrationMode = false; moveMode = !moveMode; if (moveMode) panMode = false; updatePanMode(); sync(); };
+$('move-mode').onclick = () => { stopPlayback(); dragging = null; calibrationMode = false; moveMode = !moveMode; if (moveMode) panMode = false; updatePanMode(); sync(); };
 $('zoom').oninput = () => zoomTo(Number($('zoom').value));
 $('zoom-in').onclick = () => zoomTo(active.view.zoom * 1.25);
 $('zoom-out').onclick = () => zoomTo(active.view.zoom / 1.25);
@@ -452,7 +465,7 @@ document.addEventListener('keyup', e => { if (e.code === 'Space') { spacePan = f
 window.addEventListener('blur', () => { spacePan = false; cancelSelection(); updatePanMode(); sync(); });
 function drawCrop() {
   if (!active?.meta || canvas.hidden) return;
-  const c = timestampMode ? active.timeRegion : active.crop, m = active.meta, box = $('media-stage').getBoundingClientRect(), overlay = canvas.getBoundingClientRect(), unit=devicePixelRatio;
+  const c = active.crop, m = active.meta, box = $('media-stage').getBoundingClientRect(), overlay = canvas.getBoundingClientRect(), unit=devicePixelRatio;
   if (calibrationMode) {
     ctx.clearRect(0,0,canvas.width,canvas.height);
     if (dragging?.mode === 'calibration' && dragging.end) {
@@ -467,7 +480,7 @@ function drawCrop() {
   const sx = box.width / m.width * unit, sy = box.height / m.height * unit, ox = (box.left - overlay.left) * unit, oy = (box.top - overlay.top) * unit;
   const x = ox+c.x*sx, y = oy+c.y*sy, w = c.w*sx, h = c.h*sy;
   ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#0009'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.clearRect(x,y,w,h);
-  ctx.strokeStyle=timestampMode?'#ffc879':'#bca5ff'; ctx.lineWidth=1.5*unit; ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle='#bca5ff'; ctx.lineWidth=1.5*unit; ctx.strokeRect(x,y,w,h);
   ctx.strokeStyle='#ffffff36'; ctx.lineWidth=unit*.6;
   for(let i=1;i<=2;i++){ctx.beginPath();ctx.moveTo(x+w*i/3,y);ctx.lineTo(x+w*i/3,y+h);ctx.moveTo(x,y+h*i/3);ctx.lineTo(x+w,y+h*i/3);ctx.stroke();}
   ctx.fillStyle='#ede4ff'; for(const [i,[px,py]] of handles(c).entries()){const size=(i%2?8:10)*unit;ctx.fillRect(ox+px*sx-size/2,oy+py*sy-size/2,size,size);}
@@ -499,7 +512,7 @@ canvas.onpointerdown=e=>{
   if(panMode||spacePan||e.button===1){dragging={mode:'pan',startX:e.clientX,startY:e.clientY,x:active.view.x,y:active.view.y};canvas.setPointerCapture(e.pointerId);e.preventDefault();updatePanMode();return;}
   const rect=$('media-stage').getBoundingClientRect();
   if(calibrationMode){if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)return;dragging={mode:'calibration',start:position(e),end:null};canvas.setPointerCapture(e.pointerId);e.preventDefault();return;}
-  const key=timestampMode?'timeRegion':'crop',p=position(e),c=active[key]||active.crop;
+  const key='crop',p=position(e),c=active.crop;
   const handle=active[key]?cropHandleAt(c,active.meta,rect,e.clientX,e.clientY):-1;
   if(handle<0&&(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom))return;
   const inside=p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
@@ -510,7 +523,7 @@ canvas.onpointermove=e=>{
   if(!dragging){
     if(calibrationMode&&!panMode&&!spacePan){canvas.style.cursor='crosshair';return;}
     if(panMode||spacePan){canvas.style.cursor='';return;}
-    const rect=$('media-stage').getBoundingClientRect(),c=timestampMode?active.timeRegion:active.crop;
+    const rect=$('media-stage').getBoundingClientRect(),c=active.crop;
     if(!c){canvas.style.cursor='crosshair';return;}
     const handle=cropHandleAt(c,active.meta,rect,e.clientX,e.clientY),p=position(e);
     const inside=e.clientX>=rect.left&&e.clientX<=rect.right&&e.clientY>=rect.top&&e.clientY<=rect.bottom&&p.x>=c.x&&p.x<=c.x+c.w&&p.y>=c.y&&p.y<=c.y+c.h;
@@ -538,11 +551,11 @@ canvas.onpointerup=()=>{
     const distance=Math.hypot(dragging.end.x-dragging.start.x,dragging.end.y-dragging.start.y);
     if(distance>=2){try{active.scaleBar.unitsPerPixel=calibrationFromReference(distance,active.scaleBar.referenceLength);calibrationMode=false;status('标尺已标定');}catch(error){status(error.message,true);}}
   }
-  if(dragging?.key==='timeRegion'&&dragging.changed)timestampMode=false;dragging=null;updatePanMode();sync();
+  dragging=null;updatePanMode();sync();
 };
 canvas.onpointercancel=canvas.onlostpointercapture=()=>{cancelSelection();updatePanMode();sync();};
 canvas.onpointerleave=()=>{if(!dragging)updatePanMode();};
-canvas.onkeydown=e=>{if(!active?.meta||busy||calibrationMode)return;const key=timestampMode?'timeRegion':'crop',c=active[key];if(!c)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active[key]=normalizedCrop({...c,x:c.x+x,y:c.y+y});sync();}};
+canvas.onkeydown=e=>{if(!active?.meta||busy||calibrationMode)return;const c=active.crop;if(!c)return;const delta=e.shiftKey?10:2;const changes={ArrowLeft:[-delta,0],ArrowRight:[delta,0],ArrowUp:[0,-delta],ArrowDown:[0,delta]};if(changes[e.key]){e.preventDefault();const [x,y]=changes[e.key];active.crop=normalizedCrop({...c,x:c.x+x,y:c.y+y});sync();}};
 for(const key of ['x','y','w','h'])$('crop-'+key).onchange=()=>{
   const value=Number($('crop-'+key).value);if(!Number.isFinite(value)){sync();return;}
   const c={...active.crop,[key]:value},ratio=aspectRatio();if(ratio&&key==='w')c.h=c.w/ratio;if(ratio&&key==='h')c.w=c.h*ratio;active.crop=normalizedCrop(c);sync();
@@ -553,7 +566,7 @@ $('crop-side').onchange=()=>{
   active.crop=normalizedCrop({...active.crop,w:side,h:side});sync();
 };
 $('aspect').onchange=()=>{active.aspect=$('aspect').value;const ratio=aspectRatio();if(ratio){let w=active.crop.w,h=w/ratio;if(h>active.meta.height){h=active.meta.height;w=h*ratio;}active.crop=normalizedCrop({...active.crop,w,h});}sync();};
-$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};timestampMode=false;calibrationMode=false;moveMode=false;panMode=false;updatePanMode();sync();};
+$('reset-crop').onclick=()=>{active.aspect='free';$('aspect').value='free';active.crop={x:0,y:0,w:even(active.meta.width),h:even(active.meta.height)};calibrationMode=false;moveMode=false;panMode=false;updatePanMode();sync();};
 function setTime(which,value){
   if(!Number.isFinite(value)){sync();return;}const gap=Math.min(1/active.meta.fps,active.meta.duration);
   if(which==='start')active.start=clamp(value,0,active.end-gap);else active.end=clamp(value,active.start+gap,active.meta.duration);stopPlayback();sync();
@@ -693,7 +706,7 @@ async function exportVideo(){
       args.push('-i','/scale.png');
     }
     args.push('-t',duration.toFixed(6));
-    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion},patch?.layout));
+    args.push(...videoFilterArgs(c, {...active.timeOverlay, region:active.timeRegion, meta:active.meta},patch?.layout));
     if($('audio').checked&&active.meta.audio)args.push('-map','0:a:0?');else args.push('-an');
     if(format==='mp4')args.push('-c:v','libx264','-preset','fast','-crf',$('quality').value,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart');
     else args.push('-c:v','ffv1','-level','3','-c:a','pcm_s16le');

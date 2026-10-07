@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const code = await readFile(new URL('./src/time-overlay.js', import.meta.url), 'utf8');
-const { timeOverlayLayout, videoFilterArgs } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { timeOverlayLayout, videoFilterArgs, timeRegionError } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const region = { x:440, y:8, w:192, h:28 };
 const crop = { x:100, y:120, w:320, h:240 };
 assert.deepEqual(timeOverlayLayout(crop, region), { x:124, y:4, w:192, h:28 });
 assert.deepEqual(timeOverlayLayout(crop, region, 'top-left'), { x:4, y:4, w:192, h:28 });
-assert.throws(() => videoFilterArgs(crop, { enabled:true }), /框选/);
+assert.throws(() => videoFilterArgs(crop, { enabled:true }), /选择/);
+assert.throws(() => videoFilterArgs(crop, {enabled:true,region:{x:100,y:100,w:500,h:350}}), /只框时间文字/);
+assert.throws(() => videoFilterArgs(crop, {enabled:true,region:{x:600,y:8,w:192,h:28},meta:{width:640,height:480}}), /超出/);
+assert.equal(timeRegionError(region,{width:640,height:480}), '');
 assert.deepEqual(videoFilterArgs(crop, { enabled:false }), ['-map','0:v:0','-vf','crop=320:240:100:120:exact=1,setsar=1']);
 for (const w of [2, 8, 30, 128, 640]) for (const h of [2, 20, 96, 480]) {
   for (const position of ['top-left','top-right']) {

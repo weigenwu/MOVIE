@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm';
 // itself is covered separately by the actual WASM/export-pixel regression tests.
 const source = readFileSync(new URL('./src/app.js', import.meta.url), 'utf8');
 const loadModule = file => import(`data:text/javascript;base64,${Buffer.from(readFileSync(new URL(file, import.meta.url), 'utf8')).toString('base64')}`);
-const { timeOverlayLayout, videoFilterArgs } = await loadModule('./src/time-overlay.js');
+const { timeOverlayLayout, timeRegionError, videoFilterArgs } = await loadModule('./src/time-overlay.js');
 const { scaleBarLayout, drawScaleBar } = await loadModule('./src/scale-bar.js');
 function section(start, end) {
   const from = source.indexOf(start), to = source.indexOf(end, from + start.length);
@@ -17,12 +17,13 @@ const realHandlers = [
   section('async function probe(item)', 'function renderFiles()'),
   section('async function selectFile(item)', 'function showVideo()'),
   section('function annotationError()', 'function syncTimeOverlay()'),
+  section('async function selectTimeRegion()', "$('time-position').onchange"),
   section('function scalePatch()', 'function drawTimePreview()'),
   section('async function exportVideo()', "$('export').onclick=exportVideo;")
 ].join('\n');
 const json = value => JSON.parse(JSON.stringify(value));
 function harness() {
-  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0 };
+  const elements = new Map(), calls = { exports:[], writes:[], removed:[], status:[], downloads:0, probes:0, picks:[], pickResult:null };
   const $ = id => {
     if (!elements.has(id)) elements.set(id, {
       value: id === 'format' ? 'avi' : id === 'quality' ? '18' : '',
@@ -41,7 +42,7 @@ function harness() {
   const context = {
     $, active:null, busy:false, locationBusy:false, locationReady:true, video:{pause(){},hidden:false},canvas:{hidden:false},
     resultURL:null, outputFolder:null, dragging:null, spacePan:false, panMode:false, moveMode:false,
-    timestampMode:false, calibrationMode:false, previewEpoch:0, timeOverlayLayout, videoFilterArgs,
+    calibrationMode:false, previewEpoch:0, timeOverlayLayout, timeRegionError, videoFilterArgs,
     scaleBarLayout, drawScaleBar, Blob,
     URL:{createObjectURL:()=> 'blob:test-result',revokeObjectURL(){}},
     document:{ createElement(type) {
@@ -60,6 +61,8 @@ function harness() {
     ensureOutputAccess:async()=>true,
     status:(...args)=>calls.status.push(args),
     nativeVideo:async()=>true,openRawAVI:async()=>({frames:12}),frameAt:async()=>{},showVideo(){},
+    pickTime:async options=>{calls.picks.push(options);return calls.pickResult;},
+    stopPlayback(){},cancelSelection(){context.dragging=null;},
     checkCancelled(){},updatePanMode(){},renderFiles(){},resize(){},sync(){},progress(){},outputLocation(){},
     even:n=>Math.floor(n/2)*2,humanSize:()=> 'test size'
   };
@@ -77,11 +80,84 @@ function harness() {
 {
   const h=harness(),item=await h.choose();
   assert.equal(item.timeOverlay.enabled,true);
+  assert.equal(item.timeOverlay.position,'top-right','Original time defaults to the requested upper corner');
+  assert.equal(item.scaleBar.position,'bottom-right','Scientific scale defaults to the requested bottom-right corner');
   assert.equal(item.timeRegion,null);
   await h.context.exportVideo();
   assert.equal(h.calls.exports.length,0);
-  assert.match(h.calls.status.at(-1)[0],/框选原时间/);
-  assert.match(h.context.annotationSummary(),/待框选/);
+  assert.match(h.calls.status.at(-1)[0],/选择原时间/);
+  assert.match(h.context.annotationSummary(),/待选择|待框选/);
+}
+
+// Enabling preservation never arms the main crop canvas. Opening the picker is
+// an explicit action, and only its validated confirmation commits source pixels.
+{
+  const h=harness(),item=await h.choose();
+  const crop=json(item.crop),view=json(item.view);
+  for(const enabled of [false,true]){
+    h.$('keep-time').checked=enabled;h.$('keep-time').onchange();
+    assert.equal(item.timeOverlay.enabled,enabled);
+    assert.equal(h.calls.picks.length,0,'Checkbox must not start timestamp selection');
+    assert.deepEqual(json(item.crop),crop);
+    assert.deepEqual(json(item.view),view);
+    assert.equal(item.timeRegion,null);
+  }
+  const selected={x:440,y:8,w:192,h:28};
+  h.calls.pickResult=selected;h.context.video.hidden=true;
+  await h.$('select-time').onclick();
+  assert.equal(h.calls.picks.length,1);
+  assert.equal(h.calls.picks[0].source,h.$('frame'),'AVI picker must use its visible decoded frame');
+  assert.equal(h.calls.picks[0].meta,item.meta);
+  assert.deepEqual(json(item.timeRegion),selected);
+  assert.notEqual(item.timeRegion,selected,'Committed region must not retain mutable picker state');
+  assert.equal(item.timeOverlay.enabled,true);
+  assert.deepEqual(json(item.crop),crop);
+  assert.deepEqual(json(item.view),view,'Picking time must not reset the scientific viewing zoom');
+  h.calls.pickResult=null;
+  await h.context.selectTimeRegion();
+  assert.deepEqual(json(item.timeRegion),selected,'Cancel must preserve the previous confirmed strip');
+  for(const bad of [{x:100,y:100,w:500,h:350},{x:600,y:8,w:192,h:28}]){
+    h.calls.pickResult=bad;
+    await h.context.selectTimeRegion();
+    assert.deepEqual(json(item.timeRegion),selected,'Invalid picker result must never replace the time strip');
+    assert.equal(h.calls.status.at(-1)[1],true);
+  }
+  h.context.video.hidden=false;h.calls.pickResult=selected;
+  await h.context.selectTimeRegion();
+  assert.equal(h.calls.picks.at(-1).source,h.context.video,'Native MP4 picker must use the visible video');
+  h.context.pickTime=async()=>{throw new Error('Frame not ready');};
+  await h.context.selectTimeRegion();
+  assert.deepEqual(h.calls.status.at(-1),['Frame not ready',true]);
+  assert.deepEqual(json(item.timeRegion),selected,'Decode/picker failure preserves the confirmed region');
+}
+
+// Switching files while a picker is unresolved cannot copy its result onto the
+// newly active video, nor mutate the old file after the user leaves it.
+{
+  const h=harness(),first=await h.choose();let finish;
+  h.context.pickTime=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=h.context.selectTimeRegion();
+  const next=h.makeFile('mp4','next.mp4');await h.context.selectFile(next);
+  finish({x:440,y:8,w:192,h:28});await pending;
+  assert.equal(first.timeRegion,null);
+  assert.equal(next.timeRegion,null);
+}
+
+// A scene rectangle is not a timestamp strip. Reproduce the reported duplicate
+// field shape and make sure the real export handler refuses to encode it.
+for (const badRegion of [
+  {x:100,y:100,w:500,h:350},
+  {x:100,y:100,w:180,h:180},
+  {x:0,y:0,w:600,h:150},
+  {x:600,y:8,w:192,h:28},
+  {x:440,y:470,w:192,h:28},
+  {x:-2,y:8,w:192,h:28},
+  {x:440,y:8,w:192.5,h:28}
+]) {
+  const h=harness(),item=await h.choose();item.timeRegion=badRegion;
+  await h.context.exportVideo();
+  assert.equal(h.calls.exports.length,0,`Invalid time patch must not be encoded: ${JSON.stringify(badRegion)}`);
+  assert.equal(h.calls.status.at(-1)[1],true,'Invalid time patch must show an actionable error');
 }
 
 // Both preview paths and both output formats use the original video as input.
