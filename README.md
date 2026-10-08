@@ -1,5 +1,9 @@
 # FrameCut static release
 
+2026-10-08 workflow update: large source/result view with independent zoom, visible original scale reference and thumbnail, per-file status and export-next, automatic local edit drafts plus portable validated JSON plans, and phase/elapsed/actual-frame progress with contextual retry. Restoring a plan requires reselecting matching source files; videos, output blobs and directory access are never stored in plans. Download status means initiated, not confirmed saved. Failed directory writes retain the encoded blob for retry without another encode.
+
+Verified in a real browser: AVI and native MP4 import, first-frame annotation detection, composed preview, independent zoom, export-next, actual 8-frame encoder progress, refresh/reselection restore and portable-plan restore on an independent origin. Browser AVI→MP4 and MP4→FFV1 exports independently decode to 480×400, 2 seconds and 8 frames matching source frames 2–9; the 20µm line remains 80px. Nine regression scripts cover source ownership, failure/cancel, save retry, dirty edits, draft validation and calibration. Synthetic fixtures only; the user's original large videos and second computer have not been retested. No QA assets are published.
+
 2026-10-07 automatic scale update: each input detects a unique original line and nearby label at either bottom corner, using the user's stated 50 µm reference and the measured source-pixel width for calibration. Missing or ambiguous references require retry or manual measurement; image resolution alone is never a physical calibration. Set the actual reference value if an input is not labeled 50 µm.
 
 Scale text is bold and the line is approximately twice as thick, without changing its calibrated horizontal length. Automatic matching chooses a fitting positive integer from 1, 2, 5, 10, 20, 50… near a quarter of the crop width. Editing the length switches to manual mode and preserves that setting when cropping; the automatic checkbox restores matching. A tiny crop that cannot fit an integer scale reports an error rather than drawing a falsely shortened line.
@@ -28,7 +32,7 @@ Validated using this exact WASM engine as a compute library: six AVI/MP4 export 
 
 A browser-local AVI/MP4 crop and trim editor. This branch contains only the prebuilt website and video processing engine. Video inputs and exported results stay on the visitor's device.
 
-Source: https://github.com/weigenwu/MOVIE/tree/a7bd92358d24e1931ddaeae10cd494ca258c29a6
+Source: https://github.com/weigenwu/MOVIE/tree/dc327feea2bbd589a460c8c95aa4c58733a65f71
 
 This branch has no GitHub Actions workflow. The fixed HTML entry pins its stylesheet, FFmpeg wrapper and app module to the same immutable asset commit on raw.githack.com. Their relative imports and workers stay on that revision, so an older cached entry cannot mix with newer scripts. For each update: synchronize and commit the runtime files first; then set the three HTML asset URLs to that commit and push the branch. Verify the fixed entry and all pinned resources. Keep user bookmarks unchanged. For deployment on another static host, use the source HTML's relative asset paths.
 
