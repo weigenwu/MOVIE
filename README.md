@@ -1,3 +1,5 @@
+访问保护（2026-10-08）：首次完整缓存后显示“离线可用”。保持原入口，普通刷新可在托管 429/断网时使用本机缓存。缓存包含编辑器和 31 MB 引擎，资源经 SHA-256 验证；不缓存用户视频。首次访问、清除网站数据或浏览器回收缓存后仍依赖联网。源码提交 009f6f7dd98637f3c35140c21cd9c147515c7e92。
+
 # FrameCut static release
 
 2026-10-08 workflow update: large source/result view with independent zoom, visible original scale reference and thumbnail, per-file status and export-next, automatic local edit drafts plus portable validated JSON plans, and phase/elapsed/actual-frame progress with contextual retry. Restoring a plan requires reselecting matching source files; videos, output blobs and directory access are never stored in plans. Download status means initiated, not confirmed saved. Failed directory writes retain the encoded blob for retry without another encode.
