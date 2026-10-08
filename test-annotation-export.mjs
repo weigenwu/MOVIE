@@ -22,7 +22,7 @@ const realHandlers = [
   section('function scalePatch()', 'function drawTimePreview()'),
   section('function drawTimePreview()', 'async function detectOriginalTime('),
   section("$('keep-scale').onchange", 'function cancelSelection()'),
-  section('async function exportVideo()', "$('export').onclick=exportVideo;")
+  section('async function exportVideo(', "$('export').onclick=()=>exportVideo();")
 ].join('\n');
 const json = value => JSON.parse(JSON.stringify(value));
 function harness() {
@@ -33,7 +33,7 @@ function harness() {
   const $ = id => {
     if (!elements.has(id)) elements.set(id, {
       value: id === 'format' ? 'avi' : id === 'quality' ? '18' : '',
-      checked: id === 'audio', hidden:false, style:{ setProperty(){} },
+      classList:{remove(){},toggle(){}},checked: id === 'audio', hidden:false, style:{ setProperty(){} },
       src:'',naturalWidth:640,naturalHeight:480,async decode(){calls.decodes++;},getContext(){return paintFor(id);},
       onclick(){}, onchange(){}, setAttribute(){},
       click(){ calls.downloads++; }
@@ -47,6 +47,8 @@ function harness() {
   const context = {
     $, active:null, busy:false, locationBusy:false, locationReady:true, video:{pause(){},hidden:false,src:'',currentSrc:'',videoWidth:640,videoHeight:480,readyState:3},canvas:{hidden:false},
     resultURL:null, outputFolder:null, dragging:null, spacePan:false, panMode:false, moveMode:false,
+    requestAnimationFrame:f=>f(),
+    resultMode:false,restoringPlan:false,operation:null,files:[],captureExportSettings(){},rememberEdits(){},restorePlanFor:async()=>{},setViewMode(){},setWorkflow(){},markExport(){},editSignature:()=>'test',advanceAfterExport:async()=>{},setPhase(){},
     calibrationMode:false, previewEpoch:0, timeOverlayLayout, timeRegionError, originalTimeVisible, videoFilterArgs,
     applyTimeMatte(imageData,options){const result=applyTimeMatte(imageData,options);calls.mattes.push({options:json(options),pixels:Array.from(result.data.slice(0,16))});return result;},
     scaleBarLayout, drawScaleBar, suggestedScaleLength, calibrationFromReference, Blob,
@@ -304,9 +306,8 @@ for(const position of ['top-left','top-right']){
   assert.equal(item.timeOverlay.widthPercent,85,'Disabled controls must not mutate an embedded label');
   h.drawCalls.length=0;h.context.drawTimePreview();
   const copies=h.drawCalls.filter(call=>call[0]==='drawImage'&&call.at(-1)==='time-preview');
-  const previewScaleX=h.$('time-preview').width/540,previewScaleY=h.$('time-preview').height/200;
-  assert.deepEqual(copies[1].slice(2,6),[438,6,192,28]);
-  for(const [actual,expected] of copies[1].slice(6,10).map((v,i)=>[v,[338*previewScaleX,6*previewScaleY,192*previewScaleX,28*previewScaleY][i]]))assert(Math.abs(actual-expected)<.001);
+  assert.equal(copies.length,1,'Embedded timestamp is already in the source crop; do not draw a duplicate');
+  assert.deepEqual(copies[0].slice(2,6),[100,0,540,200]);
   await h.context.exportVideo();
   const args=h.calls.exports[0],graph=args[args.indexOf('-filter_complex')+1];
   assert.doesNotMatch(graph,/,scale=/,'The native label must not be resized');
@@ -450,7 +451,9 @@ for(const ext of ['avi','mp4']){
   assert.deepEqual(json(item.scaleReference),h.calls.detectedScale);
   assert.equal(h.calls.scaleDetections.length,1);
   assert.equal(h.calls.scaleDetections[0].meta,item.meta);
-  assert.match(h.$('scale-reference-note').textContent,/50 µm/);
+  assert.match(h.$('scale-reference-note').textContent,/已按原标尺标定/);
+  assert.equal(Number(h.$('scale-reference').value),50);
+  assert.equal(h.$('scale-source-preview').hidden,false);
   assert.equal(h.$('scale-auto-length').checked,true);
   if(ext==='mp4')assert.deepEqual(seekStates,[{calibration:.5,detections:1}],'Scale detection must precede native seeking too');
   const crop=json(item.crop),time=json(item.timeRegion),view=json(item.view);
@@ -627,3 +630,20 @@ for(const change of ['file','url','unit','reference']){
 }
 
 console.log('Application annotation defaults, automatic scale calibration/length, manual controls, source lifecycle, AVI/MP4 export args, PNG/audio/duration and per-file state checks passed.');
+
+// The large result view works even without annotations and uses the same crop,
+// timestamp placement and physical bar as the small preview.
+{
+  const h=harness(),item=await h.choose();h.context.resultMode=true;
+  item.timeOverlay.enabled=false;item.scaleBar.enabled=false;
+  h.drawCalls.length=0;h.context.drawTimePreview();
+  assert.equal(h.$('result-preview').width,320);assert.equal(h.$('result-preview').height,240);
+  const base=h.drawCalls.filter(c=>c[0]==='drawImage'&&c.at(-1)==='result-preview');
+  assert.equal(base.length,1);assert.deepEqual(base[0].slice(2,6),[100,120,320,240]);
+  item.timeOverlay.enabled=true;item.timeRegion={x:440,y:8,w:192,h:28};Object.assign(item.scaleBar,{enabled:true,unitsPerPixel:.5,length:20});
+  h.drawCalls.length=0;h.context.drawTimePreview();
+  const main=h.drawCalls.filter(c=>c[0]==='drawImage'&&c.at(-1)==='result-preview'),small=h.drawCalls.filter(c=>c[0]==='drawImage'&&c.at(-1)==='time-preview');
+  assert.equal(main.length,3);assert.deepEqual(main.map(c=>c.slice(2,-1)),small.map(c=>c.slice(2,-1)));
+  h.$('frame').src='blob:other-source';h.drawCalls.length=0;h.context.drawTimePreview();assert.equal(h.drawCalls.length,0,'Do not composite frames owned by a different file');
+}
+console.log('Large result preview, annotation-free crops, shared overlay geometry and source ownership passed.');
